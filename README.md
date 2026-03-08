@@ -98,6 +98,22 @@ Processed trade transaction hashes are stored under `state/seen_trades.json` so 
 - **Partial fills** → We use FOK (fill-or-kill) market orders, so orders either fill completely or are cancelled; there are no partial fills. Order responses are logged for debugging.
 - **API errors or timeouts** → Data API and CLOB calls use retry logic (several attempts with a short delay). The main loop catches exceptions so a single failed cycle doesn’t crash the bot; it logs and continues on the next poll.
 
+## Pushing to GitHub
+
+The project is already a git repo with an initial commit. To push to your GitHub:
+
+1. Create a **new repository** on [GitHub](https://github.com/new) (do not add a README or .gitignore; the project has them).
+2. Run (replace `YOUR_USERNAME` and `YOUR_REPO` with your GitHub username and repo name):
+
+```bash
+cd polymarket-copy-trading-bot
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+git push -u origin main
+```
+
+If you use SSH: `git remote add origin git@github.com:YOUR_USERNAME/YOUR_REPO.git`
+
 ## Docs
 
-See `docs/POLYMARKET_API_REFERENCE.md` for API details, rate limits, and sizing notes.
+See `docs/POLYMARKET_API_REFERENCE.md` for API details, rate limits, and sizing notes.  
+See `docs/DESIGN_NOTES.md` for design decisions (entries/exits, safety, edge cases).
