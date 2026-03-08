@@ -12,10 +12,20 @@ CLOB_HOST = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
 DATA_API_BASE = os.getenv("DATA_API_BASE", "https://data-api.polymarket.com")
 CHAIN_ID = int(os.getenv("CHAIN_ID", "137"))
 
+def _clean_hex_key(val: str) -> str:
+    """Strip whitespace, quotes, and any non-hex characters that might be pasted by mistake."""
+    if not val:
+        return ""
+    s = val.strip().strip('"').strip("'").replace(" ", "").replace("\n", "").replace("\r", "")
+    # Keep only 0x prefix and hex digits
+    if s.startswith("0x"):
+        return "0x" + "".join(c for c in s[2:] if c in "0123456789abcdefABCDEF")
+    return "".join(c for c in s if c in "0123456789abcdefABCDEF")
+
 # Wallets and auth
 TARGET_WALLET = os.getenv("TARGET_WALLET", "").strip()
 FUNDER_ADDRESS = os.getenv("FUNDER_ADDRESS", "").strip()
-PRIVATE_KEY = os.getenv("PRIVATE_KEY", "").strip()
+PRIVATE_KEY = _clean_hex_key(os.getenv("PRIVATE_KEY", ""))
 
 # API credentials (L2)
 POLY_API_KEY = os.getenv("POLY_API_KEY", "").strip()

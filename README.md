@@ -18,12 +18,18 @@ A Python bot that watches a target trader’s Polymarket activity and mirrors th
 
 ### 1. Install dependencies
 
+**Requires Python 3.9+** (py-clob-client does not support 3.8). If your default `python3` is 3.8, use Python 3.11 from Homebrew:
+
 ```bash
 cd polymarket-copy-trading-bot
-python3 -m venv .venv
+# Use Python 3.11 (Homebrew). If you use a different 3.9+ Python, replace the path.
+/usr/local/opt/python@3.11/bin/python3.11 -m venv .venv
 source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
+
+Then **always activate the venv** before running the bot: `source .venv/bin/activate`.
 
 ### 2. Get Polymarket API credentials
 

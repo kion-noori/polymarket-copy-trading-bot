@@ -3,7 +3,9 @@ Polymarket copy-trading bot: watch a target wallet and mirror their trades with 
 """
 
 import logging
+import os
 import time
+from datetime import datetime
 
 from config import FUNDER_ADDRESS, TARGET_WALLET, POLL_INTERVAL_SEC, TEST_MODE, validate_config
 from data_api import get_trades, get_portfolio_value
@@ -14,11 +16,27 @@ from state import is_already_seen, mark_seen
 # Slippage: allow 2% worse than target's price for our market order
 SLIPPAGE_FRACTION = 0.02
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+
+def _setup_logging() -> None:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log_file = os.path.join(LOG_DIR, f"bot_{datetime.utcnow().strftime('%Y-%m-%d')}.log")
+    fmt = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if not root.handlers:
+        console = logging.StreamHandler()
+        console.setFormatter(fmt)
+        root.addHandler(console)
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(fmt)
+        root.addHandler(file_handler)
+
+
+_setup_logging()
 logger = logging.getLogger(__name__)
 
 

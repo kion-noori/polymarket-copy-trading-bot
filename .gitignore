@@ -1,5 +1,6 @@
 .env
 state/
+logs/
 *.pyc
 __pycache__/
 .venv/
