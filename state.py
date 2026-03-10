@@ -45,3 +45,14 @@ def mark_seen(transaction_hash: str) -> None:
     seen = _load_seen()
     seen.add(transaction_hash)
     _save_seen(seen)
+
+
+def mark_seen_batch(transaction_hashes: list[str]) -> None:
+    """Mark multiple hashes as seen in one read/write cycle."""
+    if not transaction_hashes:
+        return
+    seen = _load_seen()
+    for h in transaction_hashes:
+        if h:
+            seen.add(h)
+    _save_seen(seen)

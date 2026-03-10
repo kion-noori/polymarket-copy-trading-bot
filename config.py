@@ -10,7 +10,11 @@ load_dotenv()
 # Chain and API
 CLOB_HOST = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
 DATA_API_BASE = os.getenv("DATA_API_BASE", "https://data-api.polymarket.com")
-CHAIN_ID = int(os.getenv("CHAIN_ID", "137"))
+try:
+    CHAIN_ID = int(os.getenv("CHAIN_ID", "137"))
+except (TypeError, ValueError):
+    CHAIN_ID = 137
+
 
 def _clean_hex_key(val: str) -> str:
     """Strip whitespace, quotes, and any non-hex characters that might be pasted by mistake."""
@@ -33,20 +37,33 @@ POLY_API_SECRET = os.getenv("POLY_API_SECRET", "").strip()
 POLY_API_PASSPHRASE = os.getenv("POLY_API_PASSPHRASE", "").strip()
 
 # Polling
-POLL_INTERVAL_SEC = max(10, int(os.getenv("POLL_INTERVAL_SEC", "45")))
+try:
+    POLL_INTERVAL_SEC = max(10, int(os.getenv("POLL_INTERVAL_SEC", "45")))
+except (TypeError, ValueError):
+    POLL_INTERVAL_SEC = 45
 
 # Sizing
-MAX_PCT_PER_TRADE = float(os.getenv("MAX_PCT_PER_TRADE", "0.10"))
-SIZE_MULTIPLIER = float(os.getenv("SIZE_MULTIPLIER", "1.0"))
-MIN_NOTIONAL = float(os.getenv("MIN_NOTIONAL", "5.0"))
-# Absolute max $ per trade (optional). 0 = no absolute cap, only % cap.
-MAX_TRADE_USD = float(os.getenv("MAX_TRADE_USD", "0"))
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+MAX_PCT_PER_TRADE = _float_env("MAX_PCT_PER_TRADE", 0.10)
+SIZE_MULTIPLIER = _float_env("SIZE_MULTIPLIER", 1.0)
+MIN_NOTIONAL = _float_env("MIN_NOTIONAL", 5.0)
+MAX_TRADE_USD = _float_env("MAX_TRADE_USD", 0)  # 0 = no absolute cap, only % cap
 
 # Safety: test mode logs what would be done without placing orders
 TEST_MODE = os.getenv("TEST_MODE", "").strip().lower() in ("1", "true", "yes")
 
 # CLOB client
-SIGNATURE_TYPE = int(os.getenv("SIGNATURE_TYPE", "2"))
+try:
+    SIGNATURE_TYPE = int(os.getenv("SIGNATURE_TYPE", "2"))
+except (TypeError, ValueError):
+    SIGNATURE_TYPE = 2
 
 
 @dataclass

@@ -74,6 +74,20 @@ def get_market_options(condition_id: str, token_id: str) -> PartialCreateOrderOp
             return PartialCreateOrderOptions(tick_size="0.01", neg_risk=False)
 
 
+def get_current_price(token_id: str) -> float | None:
+    """Return current midpoint price for a token (for mark-to-market). None if unavailable."""
+    try:
+        client = get_client()
+        mid = client.get_midpoint(token_id)
+        if mid is not None:
+            return float(mid)
+        price = client.get_price(token_id, "BUY")
+        return float(price) if price is not None else None
+    except Exception as e:
+        logger.debug("get_current_price failed for %s: %s", token_id[:16] if token_id else "", e)
+        return None
+
+
 def place_market_order(
     token_id: str,
     condition_id: str,

@@ -17,10 +17,11 @@ API_RETRY_DELAY_SEC = 2
 
 def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response | None:
     """GET with retries and backoff. Returns None on final failure."""
+    timeout = kwargs.pop("timeout", 30)
     last_err = None
     for attempt in range(API_RETRIES):
         try:
-            r = requests.request(method, url, timeout=kwargs.get("timeout", 30), **kwargs)
+            r = requests.request(method, url, timeout=timeout, **kwargs)
             r.raise_for_status()
             return r
         except requests.RequestException as e:
@@ -49,8 +50,11 @@ def get_trades(user: str | None = None, limit: int = 100, offset: int = 0) -> li
 
 def get_portfolio_value(user: str) -> float:
     """Get total portfolio value (USDC) for an address. Returns 0 on error. Retries on failure."""
+    addr = (user or "").strip()
+    if not addr:
+        return 0.0
     url = f"{DATA_API_BASE}/value"
-    params = {"user": user.strip()}
+    params = {"user": addr}
     r = _request_with_retry("GET", url, params=params, timeout=15)
     if r is None:
         return 0.0
