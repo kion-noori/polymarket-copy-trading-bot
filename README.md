@@ -1,5 +1,7 @@
 # Polymarket Copy-Trading Bot
 
+**What problem this solves:** Copying a specific Polymarket trader manually is slow and error-prone—you see their position only after the fact and must size and submit each order yourself. This bot automates that: it polls the target’s trade feed, detects new fills, and places proportionally sized orders on your account so your book tracks theirs within configurable risk limits.
+
 A Python bot that watches a target trader’s Polymarket activity and mirrors their trades on your account with proportional sizing (cap and floor). It mirrors **both entries and exits**: when the target buys, you buy; when they sell or reduce a position, the bot sells the same side so you exit too.
 
 ## How it works
@@ -16,26 +18,39 @@ A Python bot that watches a target trader’s Polymarket activity and mirrors th
 
 ## Setup
 
+Assumes you have the repo (clone or download) and are in the project directory.
+
 ### 1. Install dependencies
 
-**Requires Python 3.9+** (py-clob-client does not support 3.8). If your default `python3` is 3.8, use Python 3.11 from Homebrew:
+**Requires Python 3.9+** (py-clob-client does not support 3.8). Check with `python3 --version`; if needed, install 3.9+ via [python.org](https://www.python.org/downloads/), Homebrew (`brew install python@3.11`), or your system package manager.
 
 ```bash
 cd polymarket-copy-trading-bot
-# Use Python 3.11 (Homebrew). If you use a different 3.9+ Python, replace the path.
-/usr/local/opt/python@3.11/bin/python3.11 -m venv .venv
-source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Then **always activate the venv** before running the bot: `source .venv/bin/activate`.
+Use the same `python3` that is 3.9+ when creating the venv (e.g. `python3.11 -m venv .venv` if that’s your 3.9+ binary). **Always activate the venv** before running the bot or the credential script below.
 
-### 2. Get Polymarket API credentials
+### 2. Configure environment (first pass)
 
-You need L2 API credentials (api key, secret, passphrase). With your private key you can derive them once:
+Copy the example env and set at least wallet addresses and private key (API creds come in step 3):
+
+```bash
+cp .env.example .env
+# Edit .env: set TARGET_WALLET, FUNDER_ADDRESS, and PRIVATE_KEY
+```
+
+### 3. Derive L2 API credentials
+
+You need L2 API credentials (api key, secret, passphrase). Derive them once from your private key. **Run from the project directory with venv activated;** ensure `PRIVATE_KEY` is available (e.g. the project’s `config` loads `.env` when you run Python from this repo, or export it: `set -a && source .env && set +a`).
 
 ```python
+from dotenv import load_dotenv
+load_dotenv()
+
 from py_clob_client.client import ClobClient
 import os
 
@@ -45,17 +60,12 @@ client = ClobClient(
     key=os.getenv("PRIVATE_KEY"),
 )
 creds = client.create_or_derive_api_creds()
-print(creds)  # Save api_key, api_secret, api_passphrase to .env
+print(creds)  # Copy api_key, api_secret, api_passphrase into .env
 ```
 
-### 3. Configure environment
+Add the printed `api_key`, `api_secret`, and `api_passphrase` to your `.env`.
 
-Copy the example env and fill in your values:
-
-```bash
-cp .env.example .env
-# Edit .env with your TARGET_WALLET, FUNDER_ADDRESS, PRIVATE_KEY, and API creds
-```
+**Env reference (all variables):**
 
 | Variable | Description |
 |----------|-------------|
@@ -71,23 +81,44 @@ cp .env.example .env
 | `TEST_MODE` | Set to `1`, `true`, or `yes` to log what would be done **without placing orders** (validate before going live). |
 | `SIGNATURE_TYPE` | 0 = EOA, 1 = POLY_PROXY, 2 = GNOSIS_SAFE (default 2 for typical Polymarket). |
 
-**Safety:** Keep all credentials in `.env` only — private key, API key, API secret, target wallet. Never commit `.env` or your private key.
+**Safety:** Keep all credentials in `.env` only — private key, API key, API secret, target wallet. Never commit `.env` or your private key. See [Security](#security) below.
 
 ### 4. Run the bot
+
+With the venv activated and `.env` complete:
 
 ```bash
 python main.py
 ```
 
-The bot runs until you stop it. It logs each detected trade and each order it places.
+The bot runs until you stop it (Ctrl+C). It logs each detected trade and each order it places. Optional: restrict `.env` to your user with `chmod 600 .env`.
 
 ## Sizing
 
-- **Proportional**: Your notional = target notional × (your portfolio value / target portfolio value) × `SIZE_MULTIPLIER`.
-- **Cap**: Your notional is capped at `MAX_PCT_PER_TRADE` × your portfolio value (so it scales as your bankroll grows). If `MAX_TRADE_USD` is set (e.g. 50), no single trade exceeds that dollar amount regardless of the target.
-- **Floor**: If the result is below `MIN_NOTIONAL`, we use `MIN_NOTIONAL` so small trades are still executed.
+Order of operations: **proportional → cap(s) → floor**. Portfolio values come from the Data API (`/value`) for both you and the target.
 
-Portfolio values are read from the Data API (`/value`) for both you and the target.
+```
+raw_notional = target_notional × (my_portfolio_value / target_portfolio_value) × SIZE_MULTIPLIER
+capped        = min(raw_notional, my_portfolio_value × MAX_PCT_PER_TRADE)
+if MAX_TRADE_USD > 0:
+    capped   = min(capped, MAX_TRADE_USD)
+my_notional  = max(capped, MIN_NOTIONAL)
+```
+
+| Step | Effect |
+|------|--------|
+| Proportional | Same portfolio weight as the target (scaled by `SIZE_MULTIPLIER`). |
+| % cap | No single trade exceeds `MAX_PCT_PER_TRADE` × your portfolio (scales with bankroll). |
+| $ cap | If `MAX_TRADE_USD` is set, no trade exceeds that dollar amount. |
+| Floor | Result is at least `MIN_NOTIONAL` so small trades still execute. |
+
+## Security
+
+- **Key storage:** Private key and API credentials live only in `.env` (gitignored). The app loads them at runtime; they are not logged or echoed in errors.
+- **Exposure surface:** The process holds keys in memory while running. Compromise of the machine (or a dump) exposes them. Run on a machine you control (e.g. a dedicated laptop or a locked-down VPS), not on shared or untrusted hosts.
+- **Key management:** Prefer a wallet used only for this bot (and fund it with only what you’re willing to copy-trade). Using a main wallet increases impact if the bot or machine is compromised.
+- **File permissions:** Restrict `.env` to the current user (e.g. `chmod 600 .env`) so other accounts on the same box cannot read it.
+- **Test before live:** Use `TEST_MODE=1` to validate behavior without placing orders; you can run with only `TARGET_WALLET` and `FUNDER_ADDRESS` set (no key/creds required for polling and sizing logs).
 
 ## Test mode
 
