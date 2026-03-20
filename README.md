@@ -1,28 +1,118 @@
 # Polymarket Copy-Trading Bot
 
-**What problem this solves:** Copying a specific Polymarket trader manually is slow and error-prone—you see their position only after the fact and must size and submit each order yourself. This bot automates that: it polls the target’s trade feed, detects new fills, and places proportionally sized orders on your account so your book tracks theirs within configurable risk limits.
+**Side project — automated mirroring of another trader’s Polymarket activity on your own account, with proportional sizing and safety limits.**
 
-A Python bot that watches a target trader’s Polymarket activity and mirrors their trades on your account with proportional sizing (cap and floor). It mirrors **both entries and exits**: when the target buys, you buy; when they sell or reduce a position, the bot sells the same side so you exit too.
+This README is written for **both product and engineering** readers: high-level behavior up front, setup and formulas below.
 
-## How it works
+---
 
-1. **Poll** the Data API for the target wallet’s recent trades (configurable interval, e.g. 45s). Compare against last known state (stored transaction hashes) to detect new trades.
-2. **Entries and exits**: We mirror both BUY and SELL. When the target sells or reduces a position, the bot places a proportional SELL on your account.
-3. **Deduplicate** by transaction hash so each of their trades is mirrored at most once.
-4. **Size** your order: same portfolio weight as the target, capped by a % of your portfolio and an optional absolute $ cap, with a minimum notional floor (small trades still execute).
-5. **Execute** via **py-clob-client only** — no direct Polygon RPC or MetaMask. The private key in `.env` handles all signing programmatically; the SDK signs and submits orders to the CLOB.
+## At a glance
 
-## Requirements
+| | |
+|--|--|
+| **Problem** | Manually copying a specific trader on [Polymarket](https://polymarket.com) is slow and easy to mess up (timing, sizing, missing exits). |
+| **Solution** | A small Python service polls the trader’s public trade feed, detects new fills, and places **proportionally sized** BUY/SELL orders on **your** account within caps you configure. |
+| **Primary user** | You (single account); one **target** wallet to copy. |
+| **Stack** | Python 3.9+, Polymarket **Data API** (read) + **CLOB** via `py-clob-client` (trade). |
+| **Safety** | Test mode (no real orders), % and optional $ caps per trade, min trade floor, credentials only in `.env`. |
 
-- **Python 3.9+** (py-clob-client requires 3.9+)
+---
 
-## Setup
+## Table of contents
 
-Assumes you have the repo (clone or download) and are in the project directory.
+1. [Product overview](#product-overview)  
+2. [User journey (happy path)](#user-journey-happy-path)  
+3. [What you can configure (“knobs”)](#what-you-can-configure-knobs)  
+4. [Known limitations & risks](#known-limitations--risks)  
+5. [How it works (system summary)](#how-it-works-system-summary)  
+6. [Observability (logs & exports)](#observability-logs--exports)  
+7. [Requirements & setup](#requirements--setup)  
+8. [Sizing (plain English + formula)](#sizing-plain-english--formula)  
+9. [Security](#security)  
+10. [Test mode](#test-mode)  
+11. [State & edge cases](#state--edge-cases)  
+12. [Further reading](#further-reading)  
+
+---
+
+## Product overview
+
+**Job to be done:** *“When trader X opens or changes a position on Polymarket, I want my account to reflect that decision at a scale appropriate to my bankroll—without babysitting the UI.”*
+
+**Core behaviors:**
+
+- **Entries:** Target buys → you buy the same outcome (YES/NO token), scaled to your settings.  
+- **Exits:** Target sells → you sell proportionally so you’re not stuck holding alone.  
+- **No double-counting:** Each of the target’s trades is keyed off a transaction hash; we process it once.  
+- **Catch-up after downtime:** If several trades appear at once, we **group** by market and apply rules (e.g. skip if they both bought and sold in the same batch so we don’t enter “late”).  
+
+**Bankroll for sizing (important):** Your “portfolio” number combines **(1) mark-to-market value of open positions** from Polymarket’s public Data API and **(2) USDC cash** sitting in the **CLOB** (so you can size correctly even when you have **cash but no open positions yet**). The target’s size uses public position value only.
+
+---
+
+## User journey (happy path)
+
+1. Configure **who to copy** (`TARGET_WALLET`) and **your** Polymarket profile address (`FUNDER_ADDRESS` from [settings](https://polymarket.com/settings)).  
+2. Run in **test mode** → confirm logs and optional `logs/trades_*.csv` look right.  
+3. Fund your Polymarket / CLOB balance; verify logs show **positions + CLOB cash**.  
+4. Turn off test mode → bot places real orders; you confirm fills on Polymarket.  
+5. Leave the process running on a machine that **stays awake** (or use a small always-on box).
+
+---
+
+## What you can configure (“knobs”)
+
+| Area | What it does |
+|------|----------------|
+| **Poll interval** | How often we check for new target trades (`POLL_INTERVAL_SEC`, default 45s). |
+| **Risk per trade** | Max **% of your bankroll** per trade (`MAX_PCT_PER_TRADE`); optional **hard $ cap** (`MAX_TRADE_USD`). |
+| **Smallest copy** | Floor so tiny proportional trades still execute (`MIN_NOTIONAL`). |
+| **Aggression** | `SIZE_MULTIPLIER` scales proportional size (1.0 = match target’s *weight*; not dollar-for-dollar). |
+| **Test mode** | `TEST_MODE=1` → full logic, **no** orders sent (safe rehearsal). |
+| **Wallet model** | `SIGNATURE_TYPE` (typically `2` for Polymarket proxy/Safe + separate funder address). |
+
+Full variable list: [Env reference](#env-reference-all-variables) in Setup below.
+
+---
+
+## Known limitations & risks
+
+- **Not a recommendation engine** — you copy **one** wallet; outcome quality is entirely theirs.  
+- **Latency** — polling is not instant; you may enter after the target.  
+- **Liquidity** — market / FOK orders can fail if the book can’t fill at your limits; logged, not retried forever on the same trade.  
+- **SELL without prior BUY** — if you start late, mirroring a target **sell** may fail if you don’t hold that position.  
+- **Operational** — sleep mode, VPN drops, or API outages pause or skip cycles; retries exist but aren’t infinite.  
+- **Security** — running with a private key on a machine means **that machine is part of your threat model**.  
+
+---
+
+## How it works (system summary)
+
+1. **Poll** Data API for the target’s recent trades.  
+2. **Filter** to trades we haven’t seen; normalize side (BUY/SELL), outcome (YES/NO), size, price.  
+3. **Group** by asset for catch-up; apply skip / net rules where needed.  
+4. **Size** each mirror order: proportional to target vs your bankroll, then **cap** (% and optional $), then **floor** (min notional).  
+5. **Execute** via **py-clob-client** only (signed orders to the CLOB; no MetaMask popups).  
+
+---
+
+## Observability (logs & exports)
+
+- **Console + daily file:** `logs/bot_YYYY-MM-DD.log` — portfolio line (positions + CLOB cash when available), each mirrored intent, errors.  
+- **Trade ledger (CSV):** `logs/trades_YYYY-MM-DD.csv` — timestamp, side, outcome (YES/NO), market title, notional, price, implied shares, `test` vs `live`.  
+- **State:** `state/seen_trades.json` — processed tx hashes so restarts don’t duplicate mirrors.  
+
+---
+
+## Requirements & setup
+
+- **Python 3.9+** (required by `py-clob-client`)
+
+Assumes you have the repo cloned and are in the project directory.
 
 ### 1. Install dependencies
 
-**Requires Python 3.9+** (py-clob-client does not support 3.8). Check with `python3 --version`; if needed, install 3.9+ via [python.org](https://www.python.org/downloads/), Homebrew (`brew install python@3.11`), or your system package manager.
+Check `python3 --version`; install 3.9+ from [python.org](https://www.python.org/downloads/), Homebrew (`brew install python@3.11`), or your OS package manager if needed.
 
 ```bash
 cd polymarket-copy-trading-bot
@@ -32,20 +122,18 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Use the same `python3` that is 3.9+ when creating the venv (e.g. `python3.11 -m venv .venv` if that’s your 3.9+ binary). **Always activate the venv** before running the bot or the credential script below.
+Use a 3.9+ interpreter for `venv` (e.g. `python3.11 -m venv .venv`). **Activate the venv** before running the bot or the credential snippet below.
 
 ### 2. Configure environment (first pass)
 
-Copy the example env and set at least wallet addresses and private key (API creds come in step 3):
-
 ```bash
 cp .env.example .env
-# Edit .env: set TARGET_WALLET, FUNDER_ADDRESS, and PRIVATE_KEY
+# Edit .env: TARGET_WALLET, FUNDER_ADDRESS, PRIVATE_KEY
 ```
 
 ### 3. Derive L2 API credentials
 
-You need L2 API credentials (api key, secret, passphrase). Derive them once from your private key. **Run from the project directory with venv activated;** ensure `PRIVATE_KEY` is available (e.g. the project’s `config` loads `.env` when you run Python from this repo, or export it: `set -a && source .env && set +a`).
+From the project directory with venv activated; `load_dotenv()` loads `.env`:
 
 ```python
 from dotenv import load_dotenv
@@ -63,43 +151,45 @@ creds = client.create_or_derive_api_creds()
 print(creds)  # Copy api_key, api_secret, api_passphrase into .env
 ```
 
-Add the printed `api_key`, `api_secret`, and `api_passphrase` to your `.env`.
-
-**Env reference (all variables):**
-
-| Variable | Description |
-|----------|-------------|
-| `TARGET_WALLET` | Polymarket address of the trader to copy (0x...). |
-| `FUNDER_ADDRESS` | Your Polymarket wallet address (from [polymarket.com/settings](https://polymarket.com/settings)). |
-| `PRIVATE_KEY` | Private key controlling that wallet (0x...). |
-| `POLY_API_KEY`, `POLY_API_SECRET`, `POLY_API_PASSPHRASE` | L2 API credentials from the step above. |
-| `POLL_INTERVAL_SEC` | Seconds between polls (default 45). |
-| `MAX_PCT_PER_TRADE` | Max fraction of your portfolio per trade (e.g. 0.10 = 10%). |
-| `SIZE_MULTIPLIER` | Scale for proportional size (1.0 = same weight as target). |
-| `MIN_NOTIONAL` | Minimum notional in USDC (floor; we always trade at least this when copying). |
-| `MAX_TRADE_USD` | Optional absolute max $ per trade (0 = only % cap). No single trade exceeds this. |
-| `TEST_MODE` | Set to `1`, `true`, or `yes` to log what would be done **without placing orders** (validate before going live). |
-| `SIGNATURE_TYPE` | 0 = EOA, 1 = POLY_PROXY, 2 = GNOSIS_SAFE (default 2 for typical Polymarket). |
-
-**Safety:** Keep all credentials in `.env` only — private key, API key, API secret, target wallet. Never commit `.env` or your private key. See [Security](#security) below.
-
 ### 4. Run the bot
-
-With the venv activated and `.env` complete:
 
 ```bash
 python main.py
 ```
 
-The bot runs until you stop it (Ctrl+C). It logs each detected trade and each order it places. Optional: restrict `.env` to your user with `chmod 600 .env`.
+Stop with `Ctrl+C`. Optional: `chmod 600 .env`.
 
-## Sizing
+### Env reference (all variables)
 
-Order of operations: **proportional → cap(s) → floor**. Portfolio values come from the Data API (`/value`) for both you and the target.
+| Variable | Description |
+|----------|-------------|
+| `TARGET_WALLET` | Address of the trader to copy (`0x…`). |
+| `FUNDER_ADDRESS` | **Your** Polymarket profile address from [settings](https://polymarket.com/settings) (often differs from your Phantom/MetaMask EOA). |
+| `PRIVATE_KEY` | Private key for the wallet that **signs** for Polymarket (usually your EOA; `SIGNATURE_TYPE=2` ties it to the funder). |
+| `POLY_API_KEY`, `POLY_API_SECRET`, `POLY_API_PASSPHRASE` | L2 API credentials from the step above. |
+| `POLL_INTERVAL_SEC` | Seconds between polls (default 45). |
+| `MAX_PCT_PER_TRADE` | Max fraction of **your** bankroll per trade (e.g. `0.10` = 10%). |
+| `SIZE_MULTIPLIER` | Scales proportional size (`1.0` = same weight as target). |
+| `MIN_NOTIONAL` | Minimum USDC notional per copy (floor). |
+| `MAX_TRADE_USD` | Optional absolute max $ per trade (`0` = use only % cap). |
+| `TEST_MODE` | `1` / `true` / `yes` = simulate only (no orders). |
+| `SIGNATURE_TYPE` | `0` EOA, `1` POLY_PROXY, `2` GNOSIS_SAFE (default `2` for typical Polymarket users). |
+
+**Safety:** Never commit `.env`. See [Security](#security).
+
+---
+
+## Sizing (plain English + formula)
+
+**Plain English:** We aim to put the same **share of your bankroll** into a trade as the target put of theirs, then **clamp** so no single trade is too large (percent of your bankroll, optional dollar cap), and **raise** tiny amounts to a minimum floor so small signals still copy.
+
+**Your bankroll** = **open position value** (public Data API) **+** **CLOB USDC cash** (so cash-only accounts still size correctly). **Target** sizing denominator uses public **position value** only.
+
+**Order of operations:** proportional → caps → floor.
 
 ```
-raw_notional = target_notional × (my_portfolio_value / target_portfolio_value) × SIZE_MULTIPLIER
-capped        = min(raw_notional, my_portfolio_value × MAX_PCT_PER_TRADE)
+raw_notional = target_notional × (my_bankroll / target_portfolio_value) × SIZE_MULTIPLIER
+capped       = min(raw_notional, my_bankroll × MAX_PCT_PER_TRADE)
 if MAX_TRADE_USD > 0:
     capped   = min(capped, MAX_TRADE_USD)
 my_notional  = max(capped, MIN_NOTIONAL)
@@ -107,50 +197,53 @@ my_notional  = max(capped, MIN_NOTIONAL)
 
 | Step | Effect |
 |------|--------|
-| Proportional | Same portfolio weight as the target (scaled by `SIZE_MULTIPLIER`). |
-| % cap | No single trade exceeds `MAX_PCT_PER_TRADE` × your portfolio (scales with bankroll). |
-| $ cap | If `MAX_TRADE_USD` is set, no trade exceeds that dollar amount. |
-| Floor | Result is at least `MIN_NOTIONAL` so small trades still execute. |
+| Proportional | Match target’s portfolio *weight* (× `SIZE_MULTIPLIER`). |
+| % cap | No trade larger than `MAX_PCT_PER_TRADE` × your bankroll. |
+| $ cap | Optional `MAX_TRADE_USD` ceiling. |
+| Floor | At least `MIN_NOTIONAL` USDC. |
+
+---
 
 ## Security
 
-- **Key storage:** Private key and API credentials live only in `.env` (gitignored). The app loads them at runtime; they are not logged or echoed in errors.
-- **Exposure surface:** The process holds keys in memory while running. Compromise of the machine (or a dump) exposes them. Run on a machine you control (e.g. a dedicated laptop or a locked-down VPS), not on shared or untrusted hosts.
-- **Key management:** Prefer a wallet used only for this bot (and fund it with only what you’re willing to copy-trade). Using a main wallet increases impact if the bot or machine is compromised.
-- **File permissions:** Restrict `.env` to the current user (e.g. `chmod 600 .env`) so other accounts on the same box cannot read it.
-- **Test before live:** Use `TEST_MODE=1` to validate behavior without placing orders; you can run with only `TARGET_WALLET` and `FUNDER_ADDRESS` set (no key/creds required for polling and sizing logs).
+- **Secrets only in `.env`** (gitignored); not logged in normal operation.  
+- **Runtime exposure** — keys live in memory while the process runs; use a machine you control.  
+- **Scope** — Prefer a **dedicated** wallet + limited capital for the bot.  
+- **Permissions** — `chmod 600 .env` on shared-user systems.  
+- **Test first** — `TEST_MODE=1` validates flow without orders; with key + creds, test mode also reads **CLOB cash** for realistic sizing.
+
+---
 
 ## Test mode
 
-Set `TEST_MODE=1` (or `true`/`yes`) in `.env`. The bot will poll and detect trades, compute sizing, and **log exactly what order it would place** without calling the CLOB. Use this to confirm behavior before going live. You can leave `PRIVATE_KEY` and API creds empty in test mode (only `TARGET_WALLET` and `FUNDER_ADDRESS` required for polling and value checks).
+`TEST_MODE=1` runs the full detection and sizing pipeline and writes logs / CSV rows, but **does not** post orders. Use until behavior and risk caps look right, then set `TEST_MODE=0` for live trading.
 
-## State
+---
 
-Processed trade transaction hashes are stored under `state/seen_trades.json` so after a restart we don’t mirror the same trade again. The `state/` directory is gitignored.
+## State & edge cases
 
-## Edge cases
+- **State file:** `state/seen_trades.json` stores seen transaction hashes (gitignored).  
+- **Target sells, you hold** → we attempt a proportional SELL so you exit together.  
+- **Market resolves** → Bot does not auto-redeem; use Polymarket UI.  
+- **FOK orders** → Fill completely or cancel; no partial fills by design.  
+- **API flakiness** → Retries on Data API and CLOB calls; main loop survives a bad cycle and continues polling.  
 
-- **Target sells a position you hold** → We mirror SELLs; the bot will place a proportional SELL so you exit too.
-- **Market resolves while you’re holding** → Positions resolve on Polymarket as usual; you can redeem winnings on the site. The bot does not auto-redeem.
-- **Partial fills** → We use FOK (fill-or-kill) market orders, so orders either fill completely or are cancelled; there are no partial fills. Order responses are logged for debugging.
-- **API errors or timeouts** → Data API and CLOB calls use retry logic (several attempts with a short delay). The main loop catches exceptions so a single failed cycle doesn’t crash the bot; it logs and continues on the next poll.
+---
+
+## Further reading
+
+- `docs/POLYMARKET_API_REFERENCE.md` — API surfaces, polling, sizing notes.  
+- `docs/DESIGN_NOTES.md` — design decisions (entries/exits, execution, safety).  
+
+---
 
 ## Pushing to GitHub
 
-The project is already a git repo with an initial commit. To push to your GitHub:
-
-1. Create a **new repository** on [GitHub](https://github.com/new) (do not add a README or .gitignore; the project has them).
-2. Run (replace `YOUR_USERNAME` and `YOUR_REPO` with your GitHub username and repo name):
+If this is a new remote:
 
 ```bash
-cd polymarket-copy-trading-bot
 git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
 git push -u origin main
 ```
 
-If you use SSH: `git remote add origin git@github.com:YOUR_USERNAME/YOUR_REPO.git`
-
-## Docs
-
-See `docs/POLYMARKET_API_REFERENCE.md` for API details, rate limits, and sizing notes.  
-See `docs/DESIGN_NOTES.md` for design decisions (entries/exits, safety, edge cases).
+SSH: `git@github.com:YOUR_USERNAME/YOUR_REPO.git`

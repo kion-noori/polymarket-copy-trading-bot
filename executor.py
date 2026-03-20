@@ -5,7 +5,14 @@ import time
 from typing import Any
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, MarketOrderArgs, OrderType, PartialCreateOrderOptions
+from py_clob_client.clob_types import (
+    ApiCreds,
+    AssetType,
+    BalanceAllowanceParams,
+    MarketOrderArgs,
+    OrderType,
+    PartialCreateOrderOptions,
+)
 from py_clob_client.order_builder.constants import BUY, SELL
 
 from config import (
@@ -72,6 +79,30 @@ def get_market_options(condition_id: str, token_id: str) -> PartialCreateOrderOp
             )
         except Exception:
             return PartialCreateOrderOptions(tick_size="0.01", neg_risk=False)
+
+
+def get_collateral_balance_usdc() -> float:
+    """
+    USDC collateral on the CLOB (cash available for new buys). Requires L2 auth.
+    Balance is returned in micro-USDC (1e6); we convert to dollars.
+    Returns 0.0 if credentials are missing or the call fails.
+    """
+    if not PRIVATE_KEY or not POLY_API_KEY:
+        return 0.0
+    try:
+        client = get_client()
+        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        resp = client.get_balance_allowance(params)
+        if isinstance(resp, dict):
+            raw = resp.get("balance")
+        else:
+            raw = getattr(resp, "balance", None)
+        if raw is None:
+            return 0.0
+        return float(raw) / 1_000_000.0
+    except Exception as e:
+        logger.debug("get_collateral_balance_usdc failed: %s", e)
+        return 0.0
 
 
 def get_current_price(token_id: str) -> float | None:

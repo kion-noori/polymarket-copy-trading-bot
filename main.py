@@ -9,7 +9,7 @@ from datetime import datetime
 
 from config import FUNDER_ADDRESS, TARGET_WALLET, POLL_INTERVAL_SEC, TEST_MODE, validate_config
 from data_api import get_trades, get_portfolio_value
-from executor import get_current_price, place_market_order
+from executor import get_collateral_balance_usdc, get_current_price, place_market_order
 from sizing import compute_my_notional
 from state import is_already_seen, mark_seen, mark_seen_batch
 
@@ -174,6 +174,29 @@ def _place_one(
         logger.error("Order failed or no orderID: %s", resp)
 
 
+def _log_portfolio_line(
+    my_value: float,
+    target_value: float,
+    raw_bankroll: float,
+    position_value: float,
+    cash_usdc: float,
+    idle_suffix: str = "",
+) -> None:
+    """Log portfolio; when we have real bankroll data, show positions + CLOB cash breakdown."""
+    tail = idle_suffix
+    if raw_bankroll > 0:
+        logger.info(
+            "Portfolio: me=$%.2f (positions $%.2f + CLOB cash $%.2f)%s | target=$%.2f",
+            my_value,
+            position_value,
+            cash_usdc,
+            tail,
+            target_value,
+        )
+    else:
+        logger.info("Portfolio: me=$%.2f%s | target=$%.2f", my_value, tail, target_value)
+
+
 def run_once() -> None:
     """Poll target trades, mirror any new ones with proportional sizing."""
     global _poll_count
@@ -182,7 +205,12 @@ def run_once() -> None:
     trades = get_trades(limit=50)
     trades = sorted(trades, key=lambda t: t.get("timestamp") or 0) if trades else []
 
-    my_value = get_portfolio_value(FUNDER_ADDRESS)
+    # Data API /value = mark-to-market of open positions only (0 if no positions).
+    # CLOB collateral = USDC cash available for trading — both matter for bankroll sizing.
+    position_value = get_portfolio_value(FUNDER_ADDRESS)
+    cash_usdc = get_collateral_balance_usdc()
+    raw_bankroll = position_value + cash_usdc
+    my_value = raw_bankroll
     target_value = get_portfolio_value(TARGET_WALLET)
     if my_value <= 0 and TEST_MODE:
         my_value = 500.0  # placeholder for sizing and theoretical PnL
@@ -192,7 +220,7 @@ def run_once() -> None:
     if not trades:
         # No trades at all: log balance only every N-th poll to avoid log spam
         if _poll_count % IDLE_LOG_EVERY_N_POLLS == 1:
-            logger.info("Portfolio: me=$%.2f | target=$%.2f (no new trades)", my_value, target_value)
+            _log_portfolio_line(my_value, target_value, raw_bankroll, position_value, cash_usdc, " (no new trades)")
             if TEST_MODE:
                 _log_theoretical_pnl()
         return
@@ -226,7 +254,7 @@ def run_once() -> None:
     # When we have new trades to mirror, always log balance. When idle (all seen), only every N-th poll.
     should_log_balance = len(unseen_by_asset) > 0 or _poll_count % IDLE_LOG_EVERY_N_POLLS == 1
     if should_log_balance:
-        logger.info("Portfolio: me=$%.2f | target=$%.2f", my_value, target_value)
+        _log_portfolio_line(my_value, target_value, raw_bankroll, position_value, cash_usdc)
         if TEST_MODE:
             _log_theoretical_pnl()
     if len(unseen_by_asset) == 0:
