@@ -28,10 +28,11 @@ This README is written for **both product and engineering** readers: high-level 
 6. [Observability (logs & exports)](#observability-logs--exports)  
 7. [Requirements & setup](#requirements--setup)  
 8. [Sizing (plain English + formula)](#sizing-plain-english--formula)  
-9. [Security](#security)  
-10. [Test mode](#test-mode)  
-11. [State & edge cases](#state--edge-cases)  
-12. [Further reading](#further-reading)  
+9. [Slippage (plain English)](#slippage-plain-english)  
+10. [Security](#security)  
+11. [Test mode](#test-mode)  
+12. [State & edge cases](#state--edge-cases)  
+13. [Further reading](#further-reading)  
 
 ---
 
@@ -66,8 +67,15 @@ This README is written for **both product and engineering** readers: high-level 
 |------|----------------|
 | **Poll interval** | How often we check for new target trades (`POLL_INTERVAL_SEC`, default 45s). |
 | **Risk per trade** | Max **% of your bankroll** per trade (`MAX_PCT_PER_TRADE`); optional **hard $ cap** (`MAX_TRADE_USD`). |
-| **Smallest copy** | Floor so tiny proportional trades still execute (`MIN_NOTIONAL`). |
+| **Smallest copy** | `MIN_NOTIONAL` + `MIN_NOTIONAL_MODE` (`floor` = bump tiny sizes up; `skip` = skip dust trades). |
+| **Late / worse fills** | `PRICE_GUARD_ENABLED` + `MAX_PRICE_DEVIATION_VS_TARGET` (skip if CLOB mid moved too far vs target’s fill). |
+| **Stale trades** | `MAX_TRADE_AGE_SEC` (skip mirrors older than N seconds; `0` = off). |
+| **Target value unknown** | `SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN` (default on: no copy when target `/value` is 0). |
 | **Aggression** | `SIZE_MULTIPLIER` scales proportional size (1.0 = match target’s *weight*; not dollar-for-dollar). |
+| **Slippage** | `SLIPPAGE_FRACTION` (BUY, default 2%) vs `SELL_SLIPPAGE_FRACTION` (SELL, default 99% wide) — see [Slippage](#slippage-plain-english). |
+| **Exit fidelity** | `PRICE_GUARD_APPLY_TO_SELL` default `false` — don’t skip SELLs when mid moved; prioritize following target exits. |
+| **SELL without shares** | `REQUIRE_CLOB_BALANCE_FOR_SELL` (default `true`) — before a **single-tx** SELL, check CLOB conditional balance; if you hold fewer shares than needed, skip and mark seen (avoids useless retries). |
+| **Failed live orders** | `MAX_LIVE_ORDER_ATTEMPTS` (default `10`) — after this many failed CLOB posts per trade, mark seen and stop retrying; `0` = retry forever. |
 | **Test mode** | `TEST_MODE=1` → full logic, **no** orders sent (safe rehearsal). |
 | **Wallet model** | `SIGNATURE_TYPE` (typically `2` for Polymarket proxy/Safe + separate funder address). |
 
@@ -79,7 +87,8 @@ Full variable list: [Env reference](#env-reference-all-variables) in Setup below
 
 - **Not a recommendation engine** — you copy **one** wallet; outcome quality is entirely theirs.  
 - **Latency** — polling is not instant; you may enter after the target.  
-- **Liquidity** — market / FOK orders can fail if the book can’t fill at your limits; logged, not retried forever on the same trade.  
+- **Guards** — optional max trade age and price-vs-target checks can **skip** a mirror (still marked seen so the bot doesn’t retry forever).  
+- **Liquidity** — market / FOK orders can fail if the book can’t fill at your limits. **Live:** failed orders are **not** marked seen at first — the bot **retries** each poll until the CLOB returns an `orderID`, or until **`MAX_LIVE_ORDER_ATTEMPTS`** is reached (then it marks seen and moves on). **CSV** rows are written only after a **successful** live order (or always in test mode).  
 - **SELL without prior BUY** — if you start late, mirroring a target **sell** may fail if you don’t hold that position.  
 - **Operational** — sleep mode, VPN drops, or API outages pause or skip cycles; retries exist but aren’t infinite.  
 - **Security** — running with a private key on a machine means **that machine is part of your threat model**.  
@@ -100,7 +109,15 @@ Full variable list: [Env reference](#env-reference-all-variables) in Setup below
 
 - **Console + daily file:** `logs/bot_YYYY-MM-DD.log` — portfolio line (positions + CLOB cash when available), each mirrored intent, errors.  
 - **Trade ledger (CSV):** `logs/trades_YYYY-MM-DD.csv` — timestamp, side, outcome (YES/NO), market title, notional, price, implied shares, `test` vs `live`.  
-- **State:** `state/seen_trades.json` — processed tx hashes so restarts don’t duplicate mirrors.  
+- **State:** `state/seen_trades.json` — processed tx hashes so restarts don’t duplicate mirrors (kept in memory while running to avoid re-reading the file every poll).  
+
+### Tests (optional)
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest tests/ -q
+```
 
 ---
 
@@ -170,8 +187,18 @@ Stop with `Ctrl+C`. Optional: `chmod 600 .env`.
 | `POLL_INTERVAL_SEC` | Seconds between polls (default 45). |
 | `MAX_PCT_PER_TRADE` | Max fraction of **your** bankroll per trade (e.g. `0.10` = 10%). |
 | `SIZE_MULTIPLIER` | Scales proportional size (`1.0` = same weight as target). |
-| `MIN_NOTIONAL` | Minimum USDC notional per copy (floor). |
+| `MIN_NOTIONAL` | Minimum USDC notional per copy (see `MIN_NOTIONAL_MODE`). |
+| `MIN_NOTIONAL_MODE` | `floor` (default) = raise tiny sizes to `MIN_NOTIONAL`; `skip` = skip trade if proportional size is below that. |
 | `MAX_TRADE_USD` | Optional absolute max $ per trade (`0` = use only % cap). |
+| `SLIPPAGE_FRACTION` | **BUY** only: max pay above target fill (default `0.02` = 2%). Range `(0, 0.5)`. |
+| `SELL_SLIPPAGE_FRACTION` | **SELL** only: how far below target’s sell price you allow (default `0.99` → floor **0.01**, i.e. take best bid down to a penny). Range `(0, 1]`. |
+| `PRICE_GUARD_APPLY_TO_SELL` | If `true`, apply `MAX_PRICE_DEVIATION_VS_TARGET` to SELLs too (can skip exits). Default `false` = **follow their exit** even if the market dropped. |
+| `REQUIRE_CLOB_BALANCE_FOR_SELL` | Default `true`: for **single-trade** SELL mirrors, require enough **conditional** token balance on the CLOB vs sized sell; otherwise skip + mark seen. Set `false` to always attempt the sell (e.g. if balance API scaling misbehaves). |
+| `SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN` | Default `true`: if target portfolio `/value` is 0, skip mirror (no blind sizing). Set `false` to restore old “use `MIN_NOTIONAL` anyway” behavior. |
+| `PRICE_GUARD_ENABLED` | Default `true`: can skip **BUYs** if mid moved up vs target fill. **SELLs** only if `PRICE_GUARD_APPLY_TO_SELL=true`. |
+| `MAX_PRICE_DEVIATION_VS_TARGET` | Max fraction worse than target’s price (default `0.08` = 8%). Set `0` to disable the check (no extra price API call). |
+| `MAX_TRADE_AGE_SEC` | Skip mirrors for trades older than this many seconds (default `3600`; `0` = disabled). |
+| `MAX_LIVE_ORDER_ATTEMPTS` | After this many failed live order posts (no `orderID`) for the same transaction(s), mark them seen and stop retrying (default `10`). `0` = unlimited retries. |
 | `TEST_MODE` | `1` / `true` / `yes` = simulate only (no orders). |
 | `SIGNATURE_TYPE` | `0` EOA, `1` POLY_PROXY, `2` GNOSIS_SAFE (default `2` for typical Polymarket users). |
 
@@ -181,7 +208,7 @@ Stop with `Ctrl+C`. Optional: `chmod 600 .env`.
 
 ## Sizing (plain English + formula)
 
-**Plain English:** We aim to put the same **share of your bankroll** into a trade as the target put of theirs, then **clamp** so no single trade is too large (percent of your bankroll, optional dollar cap), and **raise** tiny amounts to a minimum floor so small signals still copy.
+**Plain English:** We aim to put the same **share of your bankroll** into a trade as the target put of theirs, then **clamp** so no single trade is too large (percent of your bankroll, optional dollar cap). With `MIN_NOTIONAL_MODE=floor`, tiny amounts are **raised** to `MIN_NOTIONAL`; with `skip`, trades below that are **skipped**.
 
 **Your bankroll** = **open position value** (public Data API) **+** **CLOB USDC cash** (so cash-only accounts still size correctly). **Target** sizing denominator uses public **position value** only.
 
@@ -192,7 +219,8 @@ raw_notional = target_notional × (my_bankroll / target_portfolio_value) × SIZE
 capped       = min(raw_notional, my_bankroll × MAX_PCT_PER_TRADE)
 if MAX_TRADE_USD > 0:
     capped   = min(capped, MAX_TRADE_USD)
-my_notional  = max(capped, MIN_NOTIONAL)
+my_notional  = max(capped, MIN_NOTIONAL)   # floor mode
+# skip mode: if capped < MIN_NOTIONAL → my_notional = 0 (skip)
 ```
 
 | Step | Effect |
@@ -200,7 +228,24 @@ my_notional  = max(capped, MIN_NOTIONAL)
 | Proportional | Match target’s portfolio *weight* (× `SIZE_MULTIPLIER`). |
 | % cap | No trade larger than `MAX_PCT_PER_TRADE` × your bankroll. |
 | $ cap | Optional `MAX_TRADE_USD` ceiling. |
-| Floor | At least `MIN_NOTIONAL` USDC. |
+| Floor / skip | `floor`: at least `MIN_NOTIONAL` USDC. `skip`: 0 if below minimum. |
+
+---
+
+## Slippage (plain English)
+
+**Slippage** is the gap between the **price you expect** and the **price you actually get** when an order executes.
+
+- The target’s trade tells us a **reference price** (what they paid or received).  
+- Your order is a **FOK market-style** order with a **worst acceptable price** (a limit). The CLOB fills you at the best available prices **up to** that limit.  
+- **`SLIPPAGE_FRACTION` (BUY)** — max you’ll pay **above** their price: limit = target × (1 + fraction), capped at **0.99**.
+- **`SELL_SLIPPAGE_FRACTION` (SELL)** — how low you’ll sell **below** their price: limit = max(**0.01**, target × (1 − fraction)). Default **0.99** means you accept selling down to **1¢** so you’re not stuck holding after they exit.
+
+**Price guard:** For **BUYs**, we can still skip if the midpoint moved too far vs their fill. For **SELLs**, **`PRICE_GUARD_APPLY_TO_SELL`** defaults to **off** so we don’t skip their exit and leave you in the position.
+
+Examples: target bought at **0.50**, `SLIPPAGE_FRACTION=0.02` → your BUY limit **0.51**. Target sold at **0.50**, default sell settings → your SELL floor **0.01** (aggressive exit).
+
+Tighter **SELL** slippage (e.g. `SELL_SLIPPAGE_FRACTION=0.05`) = “don’t sell more than 5% below what they got” — safer price, higher risk you **don’t** fill and stay in the trade.
 
 ---
 
@@ -222,11 +267,14 @@ my_notional  = max(capped, MIN_NOTIONAL)
 
 ## State & edge cases
 
-- **State file:** `state/seen_trades.json` stores seen transaction hashes (gitignored).  
+- **State file:** `state/seen_trades.json` stores `seen_tx_hashes` and optional `order_failure_counts` for live retry / give-up (gitignored).  
 - **Target sells, you hold** → we attempt a proportional SELL so you exit together.  
 - **Market resolves** → Bot does not auto-redeem; use Polymarket UI.  
 - **FOK orders** → Fill completely or cancel; no partial fills by design.  
 - **API flakiness** → Retries on Data API and CLOB calls; main loop survives a bad cycle and continues polling.  
+- **Skipped mirrors** (price guard, age, sizing=0) → Transaction is still **marked seen** so the same fill isn’t retried every poll.  
+- **Live order failed** (no `orderID`) → **Retries** on later polls until success or **`MAX_LIVE_ORDER_ATTEMPTS`** (then marked seen; increase the limit or copy manually if you still want the trade).  
+- **SELL with no / insufficient CLOB shares** (single trade) → **Skipped** and marked seen when `REQUIRE_CLOB_BALANCE_FOR_SELL=true` and balance is readable; avoids infinite retries when you never had the position. If the balance call fails, we **still attempt** the sell and log a warning.  
 
 ---
 

@@ -81,6 +81,37 @@ def get_market_options(condition_id: str, token_id: str) -> PartialCreateOrderOp
             return PartialCreateOrderOptions(tick_size="0.01", neg_risk=False)
 
 
+def get_conditional_token_balance_shares(token_id: str) -> float | None:
+    """
+    Outcome-token (conditional) balance on the CLOB for the funder, in **shares** (human float).
+    API returns the same 1e6-scaled integer style as collateral; we divide by 1e6.
+
+    Returns None if credentials missing or the call fails (caller may still attempt the sell).
+    """
+    if not token_id or not PRIVATE_KEY or not POLY_API_KEY:
+        return None
+    try:
+        client = get_client()
+        params = BalanceAllowanceParams(
+            asset_type=AssetType.CONDITIONAL, token_id=token_id
+        )
+        resp = client.get_balance_allowance(params)
+        if isinstance(resp, dict):
+            raw = resp.get("balance")
+        else:
+            raw = getattr(resp, "balance", None)
+        if raw is None:
+            return None
+        return float(raw) / 1_000_000.0
+    except Exception as e:
+        logger.debug(
+            "get_conditional_token_balance_shares failed for %s: %s",
+            token_id[:16] if token_id else "",
+            e,
+        )
+        return None
+
+
 def get_collateral_balance_usdc() -> float:
     """
     USDC collateral on the CLOB (cash available for new buys). Requires L2 auth.

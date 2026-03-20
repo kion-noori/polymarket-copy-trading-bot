@@ -2,19 +2,39 @@
 Polymarket copy-trading bot: watch a target wallet and mirror their trades with proportional sizing.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import time
 from datetime import datetime
 
-from config import FUNDER_ADDRESS, TARGET_WALLET, POLL_INTERVAL_SEC, TEST_MODE, validate_config
+from config import (
+    FUNDER_ADDRESS,
+    MAX_LIVE_ORDER_ATTEMPTS,
+    MAX_PRICE_DEVIATION_VS_TARGET,
+    MAX_TRADE_AGE_SEC,
+    POLL_INTERVAL_SEC,
+    PRICE_GUARD_APPLY_TO_SELL,
+    PRICE_GUARD_ENABLED,
+    REQUIRE_CLOB_BALANCE_FOR_SELL,
+    SELL_SLIPPAGE_FRACTION,
+    SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN,
+    SLIPPAGE_FRACTION,
+    TARGET_WALLET,
+    TEST_MODE,
+    validate_config,
+)
 from data_api import get_trades, get_portfolio_value
-from executor import get_collateral_balance_usdc, get_current_price, place_market_order
+from executor import (
+    get_collateral_balance_usdc,
+    get_conditional_token_balance_shares,
+    get_current_price,
+    place_market_order,
+)
+from risk_guards import is_group_too_old, is_trade_too_old, price_guard_allows, vwap_price_buy_group
 from sizing import compute_my_notional
-from state import is_already_seen, mark_seen, mark_seen_batch
-
-# Slippage: allow 2% worse than target's price for our market order
-SLIPPAGE_FRACTION = 0.02
+from state import is_already_seen, mark_seen, mark_seen_batch, note_live_order_failure
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
@@ -80,6 +100,31 @@ logger = logging.getLogger(__name__)
 # Minimum net notional to place an order when catching up (avoid dust)
 MIN_NET_NOTIONAL = 0.50
 
+# Float tolerance when comparing CLOB share balance vs sell size
+SELL_SHARES_EPSILON = 1e-6
+
+
+def _skip_sell_insufficient_shares(
+    token_id: str,
+    my_notional: float,
+    worst_price: float,
+) -> tuple[bool, float | None, float]:
+    """
+    If we can read CLOB balance and it's below shares needed for this SELL, return (True, balance, need).
+    If balance unknown (None), return (False, None, need) — caller attempts sell anyway.
+    """
+    if worst_price <= 0:
+        return False, None, 0.0
+    need = my_notional / worst_price
+    if need <= 0:
+        return False, None, need
+    bal = get_conditional_token_balance_shares(token_id)
+    if bal is None:
+        return False, None, need
+    if bal + SELL_SHARES_EPSILON < need:
+        return True, bal, need
+    return False, bal, need
+
 # Theoretical portfolio (test mode only): simulate $500 and track PnL of "would have" trades
 THEORETICAL_START = 500.0
 _theoretical_cash = THEORETICAL_START
@@ -143,8 +188,12 @@ def _place_one(
     worst_price: float,
     title: str,
     outcome: str = "?",
-) -> None:
-    """Place a single order (or log in test mode) and mark no state."""
+) -> bool:
+    """
+    Place a single order (or log in test mode).
+    Returns True if the mirror should be treated as done for state purposes:
+    test mode always True after simulation; live mode True only when order returns orderID.
+    """
     shares = my_notional / worst_price if worst_price > 0 else 0
     market_short = ((title or "").strip() or "Unknown market")[:50]
     logger.info(
@@ -156,11 +205,11 @@ def _place_one(
         worst_price,
         shares,
     )
-    _append_trade_log(side, outcome, title or "", my_notional, worst_price, mode="test" if TEST_MODE else "live")
     if TEST_MODE:
+        _append_trade_log(side, outcome, title or "", my_notional, worst_price, mode="test")
         _apply_theoretical_trade(asset, side, my_notional, worst_price)
         logger.info("[TEST MODE] No order placed (simulation only)")
-        return
+        return True
     resp = place_market_order(
         token_id=asset,
         condition_id=condition_id,
@@ -169,9 +218,41 @@ def _place_one(
         worst_price=worst_price,
     )
     if resp and resp.get("orderID"):
+        _append_trade_log(side, outcome, title or "", my_notional, worst_price, mode="live")
         logger.info("Order placed: orderID=%s status=%s", resp.get("orderID"), resp.get("status"))
+        return True
+    logger.error("Order failed or no orderID: %s — will retry same trade on next poll (not marked seen)", resp)
+    return False
+
+
+def _pre_trade_allows(
+    asset: str,
+    side: str,
+    reference_price: float,
+    trade_or_group: dict | list,
+) -> tuple[bool, str]:
+    """
+    Max-age and price-vs-target checks. trade_or_group is one trade dict or list for catch-up.
+    Extra API: get_current_price when PRICE_GUARD_ENABLED.
+    """
+    if isinstance(trade_or_group, list):
+        if is_group_too_old(trade_or_group, float(MAX_TRADE_AGE_SEC)):
+            return False, f"group older than MAX_TRADE_AGE_SEC ({MAX_TRADE_AGE_SEC}s)"
     else:
-        logger.error("Order failed or no orderID: %s", resp)
+        if is_trade_too_old(trade_or_group, float(MAX_TRADE_AGE_SEC)):
+            return False, f"trade older than MAX_TRADE_AGE_SEC ({MAX_TRADE_AGE_SEC}s)"
+    if (
+        PRICE_GUARD_ENABLED
+        and MAX_PRICE_DEVIATION_VS_TARGET > 0
+        and (side.upper() != "SELL" or PRICE_GUARD_APPLY_TO_SELL)
+    ):
+        current = get_current_price(asset)
+        ok, detail = price_guard_allows(
+            side, reference_price, current, MAX_PRICE_DEVIATION_VS_TARGET
+        )
+        if not ok:
+            return False, detail
+    return True, ""
 
 
 def _log_portfolio_line(
@@ -272,8 +353,53 @@ def run_once() -> None:
             condition_id = trade.get("conditionId") or trade.get("condition_id")
             target_notional = size * price
             my_notional = compute_my_notional(target_notional, my_value, target_value)
-            worst_price = min(0.99, price * (1 + SLIPPAGE_FRACTION)) if side == "BUY" else max(0.01, price * (1 - SLIPPAGE_FRACTION))
-            _place_one(
+            if my_notional <= 0:
+                logger.info(
+                    "Skip mirror (size=0): asset=%s... | target_value=$%.2f | "
+                    "set SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN=0 or MIN_NOTIONAL_MODE=floor if unintended",
+                    asset[:16],
+                    target_value,
+                )
+                mark_seen(tx_hash)
+                continue
+            if side == "BUY":
+                worst_price = min(0.99, price * (1 + SLIPPAGE_FRACTION))
+            else:
+                worst_price = max(0.01, price * (1 - SELL_SLIPPAGE_FRACTION))
+            ok, reason = _pre_trade_allows(asset, side, price, trade)
+            if not ok:
+                logger.info(
+                    "Skip mirror (%s): %s | %s",
+                    reason,
+                    side,
+                    ((trade.get("title") or "").strip() or "Unknown")[:50],
+                )
+                mark_seen(tx_hash)
+                continue
+            if (
+                side == "SELL"
+                and not TEST_MODE
+                and REQUIRE_CLOB_BALANCE_FOR_SELL
+            ):
+                skip_sell, have_shares, need_shares = _skip_sell_insufficient_shares(
+                    asset, my_notional, worst_price
+                )
+                if skip_sell:
+                    logger.info(
+                        "Skip SELL mirror (no CLOB position): have %.6f shares, need ~%.6f | %s | tx %s...",
+                        have_shares if have_shares is not None else 0.0,
+                        need_shares,
+                        ((trade.get("title") or "").strip() or "Unknown")[:50],
+                        (tx_hash or "")[:14],
+                    )
+                    mark_seen(tx_hash)
+                    continue
+                if have_shares is None:
+                    logger.warning(
+                        "Could not read CLOB balance for SELL; attempting order anyway | token=%s...",
+                        asset[:16],
+                    )
+            if _place_one(
                 asset,
                 condition_id,
                 side,
@@ -281,27 +407,40 @@ def run_once() -> None:
                 worst_price,
                 trade.get("title", ""),
                 outcome=_normalize_outcome(trade),
-            )
-            mark_seen(tx_hash)
+            ):
+                mark_seen(tx_hash)
+            elif MAX_LIVE_ORDER_ATTEMPTS > 0 and note_live_order_failure(
+                [tx_hash], MAX_LIVE_ORDER_ATTEMPTS
+            ):
+                logger.warning(
+                    "Giving up after %s failed live orders for tx %s...; marking seen (copy manually if needed)",
+                    MAX_LIVE_ORDER_ATTEMPTS,
+                    (tx_hash or "")[:18],
+                )
+                mark_seen(tx_hash)
             continue
 
         # Multiple trades for same asset (catching up)
         has_buy = any((t.get("side") or "").upper() == "BUY" for t in group)
         has_sell = any((t.get("side") or "").upper() == "SELL" for t in group)
-
-        mark_seen_batch(
-            [t.get("transactionHash") or t.get("transaction_hash") for t in group]
-        )
+        group_hashes = [
+            h
+            for h in (
+                t.get("transactionHash") or t.get("transaction_hash") for t in group
+            )
+            if h
+        ]
 
         # If target both entered and exited (full or partial), skip: we'd be getting in at bad odds (late).
         if has_buy and has_sell:
+            mark_seen_batch(group_hashes)
             logger.info(
                 "Catch-up: skip asset %s... (target entered then sold; not mirroring late entry)",
                 asset[:16],
             )
             continue
 
-        # Only BUYs: net them and place one BUY
+        # Only BUYs: net them and place one BUY (mark batch only after success or intentional skip)
         if has_buy:
             net_notional = sum(
                 float(t.get("size", 0)) * float(t.get("price", 0))
@@ -309,14 +448,34 @@ def run_once() -> None:
                 if (t.get("side") or "").upper() == "BUY"
             )
             if net_notional < MIN_NET_NOTIONAL:
+                mark_seen_batch(group_hashes)
                 continue
             last_trade = group[-1]
             condition_id = last_trade.get("conditionId") or last_trade.get("condition_id")
             last_price = float(last_trade.get("price", 0.5))
             my_notional = compute_my_notional(net_notional, my_value, target_value)
+            if my_notional <= 0:
+                logger.info(
+                    "Catch-up skip (size=0): asset=%s... | target_value=$%.2f",
+                    asset[:16],
+                    target_value,
+                )
+                mark_seen_batch(group_hashes)
+                continue
+            ref_for_guard = vwap_price_buy_group(group) or last_price
+            ok, reason = _pre_trade_allows(asset, "BUY", ref_for_guard, group)
+            if not ok:
+                logger.info(
+                    "Catch-up skip (%s): BUY net=$%.2f | %s",
+                    reason,
+                    net_notional,
+                    ((last_trade.get("title") or "").strip() or "Unknown")[:50],
+                )
+                mark_seen_batch(group_hashes)
+                continue
             worst_price = min(0.99, last_price * (1 + SLIPPAGE_FRACTION))
             logger.info("Catch-up: net BUY notional=%.2f -> our notional=%.2f (one order)", net_notional, my_notional)
-            _place_one(
+            if _place_one(
                 asset,
                 condition_id,
                 "BUY",
@@ -324,9 +483,26 @@ def run_once() -> None:
                 worst_price,
                 last_trade.get("title", ""),
                 outcome=_normalize_outcome(last_trade),
-            )
+            ):
+                mark_seen_batch(group_hashes)
+            elif MAX_LIVE_ORDER_ATTEMPTS > 0 and note_live_order_failure(
+                group_hashes, MAX_LIVE_ORDER_ATTEMPTS
+            ):
+                logger.warning(
+                    "Giving up catch-up after %s failed live orders; marking %s tx(es) seen",
+                    MAX_LIVE_ORDER_ATTEMPTS,
+                    len(group_hashes),
+                )
+                mark_seen_batch(group_hashes)
+            continue
 
         # Only SELLs: skip (we weren't in the position when they sold; mirroring would be wrong)
+        if has_sell:
+            mark_seen_batch(group_hashes)
+            logger.info(
+                "Catch-up: skip asset %s... (only SELLs; not mirroring without position)",
+                asset[:16],
+            )
 
 
 def main() -> None:
@@ -341,6 +517,18 @@ def main() -> None:
         TARGET_WALLET[:10] + "..." if len(TARGET_WALLET) > 10 else TARGET_WALLET,
         POLL_INTERVAL_SEC,
         " [TEST MODE - no orders placed]" if TEST_MODE else "",
+    )
+    logger.info(
+        "Risk: price_guard=%s (sell=%s) max_dev=%.0f%% | buy_slip=%.0f%% sell_slip=%.0f%% | max_trade_age=%ss | skip_unknown_target=%s | max_live_order_attempts=%s | require_clob_shares_for_sell=%s",
+        PRICE_GUARD_ENABLED,
+        PRICE_GUARD_APPLY_TO_SELL,
+        100.0 * MAX_PRICE_DEVIATION_VS_TARGET,
+        100.0 * SLIPPAGE_FRACTION,
+        100.0 * SELL_SLIPPAGE_FRACTION,
+        MAX_TRADE_AGE_SEC if MAX_TRADE_AGE_SEC > 0 else "off",
+        SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN,
+        MAX_LIVE_ORDER_ATTEMPTS if MAX_LIVE_ORDER_ATTEMPTS > 0 else "unlimited",
+        REQUIRE_CLOB_BALANCE_FOR_SELL,
     )
     while True:
         try:

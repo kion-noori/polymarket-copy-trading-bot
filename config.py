@@ -56,6 +56,48 @@ SIZE_MULTIPLIER = _float_env("SIZE_MULTIPLIER", 1.0)
 MIN_NOTIONAL = _float_env("MIN_NOTIONAL", 5.0)
 MAX_TRADE_USD = _float_env("MAX_TRADE_USD", 0)  # 0 = no absolute cap, only % cap
 
+# BUY: worst acceptable price vs target fill (FOK limit). Default 2% — tight entries.
+SLIPPAGE_FRACTION = _float_env("SLIPPAGE_FRACTION", 0.02)
+# SELL: default very wide so we follow target exits even if market dropped (floor 0.01).
+SELL_SLIPPAGE_FRACTION = _float_env("SELL_SLIPPAGE_FRACTION", 0.99)
+
+# Live CLOB: after this many failed posts (no orderID) for the same tx(es), mark seen and stop retrying. 0 = unlimited.
+try:
+    MAX_LIVE_ORDER_ATTEMPTS = max(0, int(os.getenv("MAX_LIVE_ORDER_ATTEMPTS", "10")))
+except (TypeError, ValueError):
+    MAX_LIVE_ORDER_ATTEMPTS = 10
+
+# Min notional: "floor" = bump tiny sizes up to MIN_NOTIONAL (legacy). "skip" = skip trade if below floor.
+_MIN_NOTIONAL_MODE_RAW = os.getenv("MIN_NOTIONAL_MODE", "floor").strip().lower()
+MIN_NOTIONAL_MODE = (
+    _MIN_NOTIONAL_MODE_RAW if _MIN_NOTIONAL_MODE_RAW in ("floor", "skip") else "floor"
+)
+
+# If True (default), do not mirror when target portfolio value is 0/unknown — avoids blind MIN_NOTIONAL sizing.
+def _bool_env(name: str, default: bool) -> bool:
+    v = os.getenv(name, "").strip().lower()
+    if not v:
+        return default
+    return v in ("1", "true", "yes", "on")
+
+SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN = _bool_env("SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN", True)
+
+# Price guard: extra CLOB midpoint vs target's fill; skip if market moved too much against you.
+PRICE_GUARD_ENABLED = _bool_env("PRICE_GUARD_ENABLED", True)
+# If False (default): do not skip SELLs on price guard — prioritize exiting when target exits.
+PRICE_GUARD_APPLY_TO_SELL = _bool_env("PRICE_GUARD_APPLY_TO_SELL", False)
+
+# Before mirroring a SELL, check CLOB conditional token balance; skip + mark seen if we can't cover size.
+REQUIRE_CLOB_BALANCE_FOR_SELL = _bool_env("REQUIRE_CLOB_BALANCE_FOR_SELL", True)
+# e.g. 0.08 = 8% worse than target's price → skip (BUY: pay more; SELL: receive less, when enabled)
+MAX_PRICE_DEVIATION_VS_TARGET = _float_env("MAX_PRICE_DEVIATION_VS_TARGET", 0.08)
+
+# Skip mirrors when trade is older than N seconds (0 = disabled). Reduces late entries after downtime.
+try:
+    MAX_TRADE_AGE_SEC = max(0, int(os.getenv("MAX_TRADE_AGE_SEC", "3600")))
+except (TypeError, ValueError):
+    MAX_TRADE_AGE_SEC = 3600
+
 # Safety: test mode logs what would be done without placing orders
 TEST_MODE = os.getenv("TEST_MODE", "").strip().lower() in ("1", "true", "yes")
 
@@ -103,4 +145,12 @@ def validate_config() -> list[str]:
         errors.append("MIN_NOTIONAL must be >= 0")
     if MAX_TRADE_USD < 0:
         errors.append("MAX_TRADE_USD must be >= 0")
+    if not (0 <= MAX_PRICE_DEVIATION_VS_TARGET <= 0.99):
+        errors.append("MAX_PRICE_DEVIATION_VS_TARGET should be in [0, 0.99]")
+    if not (0 < SLIPPAGE_FRACTION < 0.5):
+        errors.append("SLIPPAGE_FRACTION should be in (0, 0.5)")
+    if not (0 < SELL_SLIPPAGE_FRACTION <= 1.0):
+        errors.append("SELL_SLIPPAGE_FRACTION should be in (0, 1]")
+    if _MIN_NOTIONAL_MODE_RAW not in ("", "floor", "skip"):
+        errors.append("MIN_NOTIONAL_MODE must be 'floor' or 'skip'")
     return errors

@@ -1,3 +1,4 @@
-py-clob-client
-python-dotenv
-requests
+# Ranges for broad Python/pip compatibility. Last full check: py-clob-client 0.34.x.
+py-clob-client>=0.17.0,<1
+python-dotenv>=1.0.0,<2
+requests>=2.28.0,<3
