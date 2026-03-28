@@ -1,0 +1,22 @@
+# Copy to /etc/systemd/system/polymarket-bot.service (adjust User + paths).
+# sudo systemctl daemon-reload && sudo systemctl enable --now polymarket-bot
+
+[Unit]
+Description=Polymarket copy-trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-copy-trading-bot
+ExecStart=/home/ubuntu/polymarket-copy-trading-bot/.venv/bin/python main.py
+Restart=always
+RestartSec=15
+
+# Hardening (optional; may need loosening if something breaks)
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

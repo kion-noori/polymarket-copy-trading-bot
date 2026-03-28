@@ -26,7 +26,7 @@ This README is written for **both product and engineering** readers: high-level 
 4. [Known limitations & risks](#known-limitations--risks)  
 5. [How it works (system summary)](#how-it-works-system-summary)  
 6. [Observability (logs & exports)](#observability-logs--exports)  
-7. [Requirements & setup](#requirements--setup)  
+7. [Requirements & setup](#requirements--setup) (includes [VPS / 24×7](#run-on-a-vps-247))  
 8. [Sizing (plain English + formula)](#sizing-plain-english--formula)  
 9. [Slippage (plain English)](#slippage-plain-english)  
 10. [Security](#security)  
@@ -175,6 +175,43 @@ python main.py
 ```
 
 Stop with `Ctrl+C`. Optional: `chmod 600 .env`.
+
+### Run on a VPS (24×7)
+
+Use a small **Ubuntu 22.04/24.04** VM (e.g. Hetzner, DigitalOcean, Vultr, Linode). Pick a region that works for you; if Polymarket or the CLOB is flaky from that region, try a **US** datacenter or a VPN on the VPS (advanced).
+
+**On the server:**
+
+```bash
+sudo apt update && sudo apt install -y git python3.11-venv python3-pip
+# If python3.11 is not available: use python3 -m venv with whatever is 3.9+
+git clone https://github.com/YOUR_USER/polymarket-copy-trading-bot.git
+cd polymarket-copy-trading-bot
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Copy your **`.env`** from your laptop (do **not** commit it):
+
+```bash
+# From your laptop:
+scp .env user@YOUR_SERVER_IP:~/polymarket-copy-trading-bot/.env
+# On server:
+chmod 600 .env
+```
+
+**Smoke test (no real orders):** set `TEST_MODE=1` in `.env`, then `source .venv/bin/activate && python main.py`. Confirm logs look sane (`Ctrl+C` to stop). Then set `TEST_MODE=0` for live trading.
+
+**systemd** (survives disconnects and reboots):
+
+1. Edit `deploy/polymarket-bot.service.example`: replace `ubuntu` and paths with your Linux user and clone path.
+2. `sudo cp deploy/polymarket-bot.service.example /etc/systemd/system/polymarket-bot.service`
+3. `sudo systemctl daemon-reload && sudo systemctl enable --now polymarket-bot`
+4. Logs: `journalctl -u polymarket-bot -f` (and `logs/` under the repo if you need CSV).
+
+**Mexico / travel:** Polymarket access varies by IP and jurisdiction. If the **website** works from your hotel but the **bot on a VPS** fails (blocked API, etc.), try another region or ask your host about compliance. This is not legal advice.
 
 ### Env reference (all variables)
 
