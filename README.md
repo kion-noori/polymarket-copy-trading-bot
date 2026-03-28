@@ -178,7 +178,17 @@ Stop with `Ctrl+C`. Optional: `chmod 600 .env`.
 
 ### Run on a VPS (24×7)
 
-Use a small **Ubuntu 22.04/24.04** VM (e.g. Hetzner, DigitalOcean, Vultr, Linode). Pick a region that works for you; if Polymarket or the CLOB is flaky from that region, try a **US** datacenter or a VPN on the VPS (advanced).
+Use a small **Ubuntu 22.04/24.04** VM (e.g. Hetzner, DigitalOcean, Vultr, Linode).
+
+**Region matters for live orders:** Polymarket blocks order placement from certain countries based on the **server’s public IP** (same idea as geo rules for users). The **United States is blocked** for placing orders — do **not** rely on a US-region VPS for live trading. See [Polymarket geographic restrictions / geoblock](https://docs.polymarket.com/developers/CLOB/geoblock) for the current list.
+
+After SSH’ing into a new VPS, verify:
+
+```bash
+curl -s https://polymarket.com/api/geoblock
+```
+
+You want `"blocked": false`. If `"blocked": true`, choose another provider region or datacenter. Do not use VPNs to bypass restrictions (against Polymarket’s terms).
 
 **On the server:**
 
@@ -211,7 +221,7 @@ chmod 600 .env
 3. `sudo systemctl daemon-reload && sudo systemctl enable --now polymarket-bot`
 4. Logs: `journalctl -u polymarket-bot -f` (and `logs/` under the repo if you need CSV).
 
-**Mexico / travel:** Polymarket access varies by IP and jurisdiction. If the **website** works from your hotel but the **bot on a VPS** fails (blocked API, etc.), try another region or ask your host about compliance. This is not legal advice.
+**Travel:** Your laptop IP and your **VPS IP** are checked independently. A region that works on Wi‑Fi may still be blocked from the datacenter. Always run `curl` geoblock **from the VPS** before relying on live `TEST_MODE=0`. This is not legal advice.
 
 ### Env reference (all variables)
 
