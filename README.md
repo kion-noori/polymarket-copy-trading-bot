@@ -376,6 +376,12 @@ You can sanity-check your local `.env` any time with:
 python scripts/check_env.py
 ```
 
+For a stronger authenticated readiness check that derives the signer address from your private key and makes safe authenticated client reads without placing any orders:
+
+```bash
+.venv/bin/python scripts/check_live_ready.py
+```
+
 ---
 
 ## State & edge cases
