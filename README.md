@@ -347,7 +347,13 @@ ALERT_WEBHOOK_URL=https://your-webhook-endpoint
 ALERT_MIN_INTERVAL_SEC=300
 ```
 
-The bot sends a `POST` with JSON like:
+The bot auto-detects common webhook types:
+
+- Discord webhook URL -> sends `{"content":"[kind] message"}`
+- Slack Incoming Webhook URL -> sends `{"text":"[kind] message"}`
+- Anything else -> sends generic JSON
+
+Generic JSON looks like:
 
 ```json
 {"kind":"live_order_give_up","text":"Giving up after 10 failed live orders for tx 0x1234...","ts":1712345678}
@@ -363,6 +369,12 @@ Easy ways to receive alerts:
    Use a catch-all webhook URL there, then forward alerts to email, SMS, Telegram, or whatever you prefer.
 
 If you want the fastest setup, Discord is usually the easiest. Create a private channel just for the bot, add a webhook, and you’ll get near-real-time notifications in that channel.
+
+You can sanity-check your local `.env` any time with:
+
+```bash
+python scripts/check_env.py
+```
 
 ---
 
