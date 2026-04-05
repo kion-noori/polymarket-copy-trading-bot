@@ -69,6 +69,7 @@ This README is written for **both product and engineering** readers: high-level 
 | **Risk per trade** | Max **% of your bankroll** per trade (`MAX_PCT_PER_TRADE`); optional **hard $ cap** (`MAX_TRADE_USD`). |
 | **Smallest copy** | `MIN_NOTIONAL` + `MIN_NOTIONAL_MODE` (`floor` = bump tiny sizes up; `skip` = skip dust trades). |
 | **Late / worse fills** | `PRICE_GUARD_ENABLED` + `MAX_PRICE_DEVIATION_VS_TARGET` (skip if CLOB mid moved too far vs target’s fill). |
+| **Late-entry controls** | `RECENT_TRADES_PAGE_SIZE` × `RECENT_TRADES_MAX_PAGES`, `MAX_BUY_PRICE`, and `STARTUP_MODE` help avoid chasing stale or near-resolved entries. |
 | **Stale trades** | `MAX_TRADE_AGE_SEC` (skip mirrors older than N seconds; `0` = off). |
 | **Target value unknown** | `SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN` (default on: no copy when target `/value` is 0). |
 | **Aggression** | `SIZE_MULTIPLIER` scales proportional size (1.0 = match target’s *weight*; not dollar-for-dollar). |
@@ -76,6 +77,7 @@ This README is written for **both product and engineering** readers: high-level 
 | **Exit fidelity** | `PRICE_GUARD_APPLY_TO_SELL` default `false` — don’t skip SELLs when mid moved; prioritize following target exits. |
 | **SELL without shares** | `REQUIRE_CLOB_BALANCE_FOR_SELL` (default `true`) — before a **single-tx** SELL, check CLOB conditional balance; if you hold fewer shares than needed, skip and mark seen (avoids useless retries). |
 | **Failed live orders** | `MAX_LIVE_ORDER_ATTEMPTS` (default `10`) — after this many failed CLOB posts per trade, mark seen and stop retrying; `0` = retry forever. |
+| **Alerts** | `ALERT_WEBHOOK_URL` + `ALERT_MIN_INTERVAL_SEC` send throttled webhook notifications for repeated live-order failures / startup skips. |
 | **Test mode** | `TEST_MODE=1` → full logic, **no** orders sent (safe rehearsal). |
 | **Wallet model** | `SIGNATURE_TYPE` (typically `2` for Polymarket proxy/Safe + separate funder address). |
 
@@ -88,6 +90,7 @@ Full variable list: [Env reference](#env-reference-all-variables) in Setup below
 - **Not a recommendation engine** — you copy **one** wallet; outcome quality is entirely theirs.  
 - **Latency** — polling is not instant; you may enter after the target.  
 - **Guards** — optional max trade age and price-vs-target checks can **skip** a mirror (still marked seen so the bot doesn’t retry forever).  
+- **Late entries** — the bot now checks a wider recent trade window by default (**500 trades** = `RECENT_TRADES_PAGE_SIZE=100` × `RECENT_TRADES_MAX_PAGES=5`) so it is less likely to buy something the target already exited.  
 - **Liquidity** — market / FOK orders can fail if the book can’t fill at your limits. **Live:** failed orders are **not** marked seen at first — the bot **retries** each poll until the CLOB returns an `orderID`, or until **`MAX_LIVE_ORDER_ATTEMPTS`** is reached (then it marks seen and moves on). **CSV** rows are written only after a **successful** live order (or always in test mode).  
 - **SELL without prior BUY** — if you start late, mirroring a target **sell** may fail if you don’t hold that position.  
 - **Operational** — sleep mode, VPN drops, or API outages pause or skip cycles; retries exist but aren’t infinite.  
@@ -101,7 +104,8 @@ Full variable list: [Env reference](#env-reference-all-variables) in Setup below
 2. **Filter** to trades we haven’t seen; normalize side (BUY/SELL), outcome (YES/NO), size, price.  
 3. **Group** by asset for catch-up; apply skip / net rules where needed.  
 4. **Size** each mirror order: proportional to target vs your bankroll, then **cap** (% and optional $), then **floor** (min notional).  
-5. **Execute** via **py-clob-client** only (signed orders to the CLOB; no MetaMask popups).  
+5. **Guard late entries** with a recent-trade window, max buy price, optional spread check, and optional `live_safe` startup behavior.  
+6. **Execute** via **py-clob-client** only (signed orders to the CLOB; no MetaMask popups).  
 
 ---
 
@@ -110,6 +114,7 @@ Full variable list: [Env reference](#env-reference-all-variables) in Setup below
 - **Console + daily file:** `logs/bot_YYYY-MM-DD.log` — portfolio line (positions + CLOB cash when available), each mirrored intent, errors.  
 - **Trade ledger (CSV):** `logs/trades_YYYY-MM-DD.csv` — timestamp, side, outcome (YES/NO), market title, notional, price, implied shares, `test` vs `live`.  
 - **State:** `state/seen_trades.json` — processed tx hashes so restarts don’t duplicate mirrors (kept in memory while running to avoid re-reading the file every poll).  
+- **Webhook alerts (optional):** configure `ALERT_WEBHOOK_URL` to receive throttled JSON alerts for startup skips and repeated live-order failures.  
 
 ### Tests (optional)
 
@@ -232,6 +237,9 @@ chmod 600 .env
 | `PRIVATE_KEY` | Private key for the wallet that **signs** for Polymarket (usually your EOA; `SIGNATURE_TYPE=2` ties it to the funder). |
 | `POLY_API_KEY`, `POLY_API_SECRET`, `POLY_API_PASSPHRASE` | L2 API credentials from the step above. |
 | `POLL_INTERVAL_SEC` | Seconds between polls (default 45). |
+| `RECENT_TRADES_PAGE_SIZE` | Trades fetched per Data API page when building the recent decision window (default `100`). |
+| `RECENT_TRADES_MAX_PAGES` | Number of recent Data API pages to inspect for catch-up / late-entry logic (default `5` = about 500 recent trades). |
+| `STARTUP_MODE` | `resume` (default) = normal catch-up behavior on boot; `live_safe` = mark all currently visible trades seen on startup and only mirror trades that appear afterward. |
 | `MAX_PCT_PER_TRADE` | Max fraction of **your** bankroll per trade (e.g. `0.10` = 10%). |
 | `SIZE_MULTIPLIER` | Scales proportional size (`1.0` = same weight as target). |
 | `MIN_NOTIONAL` | Minimum USDC notional per copy (see `MIN_NOTIONAL_MODE`). |
@@ -239,6 +247,8 @@ chmod 600 .env
 | `MAX_TRADE_USD` | Optional absolute max $ per trade (`0` = use only % cap). |
 | `SLIPPAGE_FRACTION` | **BUY** only: max pay above target fill (default `0.02` = 2%). Range `(0, 0.5)`. |
 | `SELL_SLIPPAGE_FRACTION` | **SELL** only: how far below target’s sell price you allow (default `0.99` → floor **0.01**, i.e. take best bid down to a penny). Range `(0, 1]`. |
+| `MAX_BUY_PRICE` | Skip BUY mirrors when the live/current price is at or above this level (default `0.95`). Useful for avoiding near-resolved markets. |
+| `MAX_SPREAD_FRACTION` | Skip BUY mirrors when the bid/ask spread is wider than this fraction of the midpoint (default `0.12` = 12%). Set `0` to disable. |
 | `PRICE_GUARD_APPLY_TO_SELL` | If `true`, apply `MAX_PRICE_DEVIATION_VS_TARGET` to SELLs too (can skip exits). Default `false` = **follow their exit** even if the market dropped. |
 | `REQUIRE_CLOB_BALANCE_FOR_SELL` | Default `true`: for **single-trade** SELL mirrors, require enough **conditional** token balance on the CLOB vs sized sell; otherwise skip + mark seen. Set `false` to always attempt the sell (e.g. if balance API scaling misbehaves). |
 | `SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN` | Default `true`: if target portfolio `/value` is 0, skip mirror (no blind sizing). Set `false` to restore old “use `MIN_NOTIONAL` anyway” behavior. |
@@ -246,6 +256,8 @@ chmod 600 .env
 | `MAX_PRICE_DEVIATION_VS_TARGET` | Max fraction worse than target’s price (default `0.08` = 8%). Set `0` to disable the check (no extra price API call). |
 | `MAX_TRADE_AGE_SEC` | Skip mirrors for trades older than this many seconds (default `3600`; `0` = disabled). |
 | `MAX_LIVE_ORDER_ATTEMPTS` | After this many failed live order posts (no `orderID`) for the same transaction(s), mark them seen and stop retrying (default `10`). `0` = unlimited retries. |
+| `ALERT_WEBHOOK_URL` | Optional webhook endpoint that accepts a JSON POST body `{kind, text, ts}` for important bot alerts. |
+| `ALERT_MIN_INTERVAL_SEC` | Per-alert-type throttle window in seconds (default `300`) to avoid spam. |
 | `TEST_MODE` | `1` / `true` / `yes` = simulate only (no orders). |
 | `SIGNATURE_TYPE` | `0` EOA, `1` POLY_PROXY, `2` GNOSIS_SAFE (default `2` for typical Polymarket users). |
 
@@ -290,9 +302,18 @@ my_notional  = max(capped, MIN_NOTIONAL)   # floor mode
 
 **Price guard:** For **BUYs**, we can still skip if the midpoint moved too far vs their fill. For **SELLs**, **`PRICE_GUARD_APPLY_TO_SELL`** defaults to **off** so we don’t skip their exit and leave you in the position.
 
+**Late-entry guard:** Even if the target has not sold yet, buying at **0.95+** usually means you are paying for a trade whose edge may already be mostly gone. `MAX_BUY_PRICE` gives you a simple brake for that scenario, while the recent-trade window helps detect cases where they already bought and sold before you saw it.
+
 Examples: target bought at **0.50**, `SLIPPAGE_FRACTION=0.02` → your BUY limit **0.51**. Target sold at **0.50**, default sell settings → your SELL floor **0.01** (aggressive exit).
 
 Tighter **SELL** slippage (e.g. `SELL_SLIPPAGE_FRACTION=0.05`) = “don’t sell more than 5% below what they got” — safer price, higher risk you **don’t** fill and stay in the trade.
+
+### Startup Modes
+
+- `STARTUP_MODE=resume` means the bot behaves normally after boot: it looks at the recent trade window and may still mirror active positions if they pass the guards.
+- `STARTUP_MODE=live_safe` means the bot intentionally ignores anything already visible at startup, marks those tx hashes seen, and only mirrors trades that happen after the process is already running.
+
+If you are on a stable VPS and want to follow active positions, `resume` is usually what you want. If you restart often, are testing a new server, or are nervous about catching up on ambiguous old activity, `live_safe` is the safest mode.
 
 ---
 

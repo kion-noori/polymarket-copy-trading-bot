@@ -1,19 +1,32 @@
 """CLOB client: authenticate and place market orders to mirror target trades."""
 
+from __future__ import annotations
+
 import logging
 import time
 from typing import Any
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
-    ApiCreds,
-    AssetType,
-    BalanceAllowanceParams,
-    MarketOrderArgs,
-    OrderType,
-    PartialCreateOrderOptions,
-)
-from py_clob_client.order_builder.constants import BUY, SELL
+try:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import (
+        ApiCreds,
+        AssetType,
+        BalanceAllowanceParams,
+        MarketOrderArgs,
+        OrderType,
+        PartialCreateOrderOptions,
+    )
+    from py_clob_client.order_builder.constants import BUY, SELL
+except ImportError:
+    ClobClient = None
+    ApiCreds = None
+    AssetType = None
+    BalanceAllowanceParams = None
+    MarketOrderArgs = None
+    OrderType = None
+    PartialCreateOrderOptions = None
+    BUY = "BUY"
+    SELL = "SELL"
 
 from config import (
     CHAIN_ID,
@@ -35,9 +48,17 @@ ORDER_RETRY_DELAY_SEC = 3
 _client: ClobClient | None = None
 
 
+def _require_client_lib() -> None:
+    if ClobClient is None:
+        raise RuntimeError(
+            "py-clob-client is not installed. Install requirements.txt before live trading."
+        )
+
+
 def get_client() -> ClobClient:
     """Singleton CLOB client with L2 credentials."""
     global _client
+    _require_client_lib()
     if _client is None:
         creds = ApiCreds(
             api_key=POLY_API_KEY,
@@ -57,6 +78,7 @@ def get_client() -> ClobClient:
 
 def get_market_options(condition_id: str, token_id: str) -> PartialCreateOrderOptions:
     """Get tick_size and neg_risk for a market (required for order placement)."""
+    _require_client_lib()
     client = get_client()
     try:
         market = client.get_market(condition_id)
@@ -91,6 +113,7 @@ def get_conditional_token_balance_shares(token_id: str) -> float | None:
     if not token_id or not PRIVATE_KEY or not POLY_API_KEY:
         return None
     try:
+        _require_client_lib()
         client = get_client()
         params = BalanceAllowanceParams(
             asset_type=AssetType.CONDITIONAL, token_id=token_id
@@ -121,6 +144,7 @@ def get_collateral_balance_usdc() -> float:
     if not PRIVATE_KEY or not POLY_API_KEY:
         return 0.0
     try:
+        _require_client_lib()
         client = get_client()
         params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
         resp = client.get_balance_allowance(params)
@@ -139,6 +163,7 @@ def get_collateral_balance_usdc() -> float:
 def get_current_price(token_id: str) -> float | None:
     """Return current midpoint price for a token (for mark-to-market). None if unavailable."""
     try:
+        _require_client_lib()
         client = get_client()
         mid = client.get_midpoint(token_id)
         if mid is not None:
@@ -148,6 +173,24 @@ def get_current_price(token_id: str) -> float | None:
     except Exception as e:
         logger.debug("get_current_price failed for %s: %s", token_id[:16] if token_id else "", e)
         return None
+
+
+def get_bid_ask_prices(token_id: str) -> tuple[float | None, float | None]:
+    """
+    Return (best_bid, best_ask) using client price helpers.
+    Assumes SELL price is current bid and BUY price is current ask.
+    """
+    try:
+        _require_client_lib()
+        client = get_client()
+        best_bid = client.get_price(token_id, "SELL")
+        best_ask = client.get_price(token_id, "BUY")
+        bid = float(best_bid) if best_bid is not None else None
+        ask = float(best_ask) if best_ask is not None else None
+        return bid, ask
+    except Exception as e:
+        logger.debug("get_bid_ask_prices failed for %s: %s", token_id[:16] if token_id else "", e)
+        return None, None
 
 
 def place_market_order(
@@ -166,6 +209,7 @@ def place_market_order(
     if notional_usd <= 0:
         logger.warning("place_market_order: notional_usd <= 0, skipping")
         return None
+    _require_client_lib()
     options = get_market_options(condition_id, token_id)
     side_val = BUY if side.upper() == "BUY" else SELL
     client = get_client()

@@ -41,6 +41,18 @@ try:
     POLL_INTERVAL_SEC = max(10, int(os.getenv("POLL_INTERVAL_SEC", "45")))
 except (TypeError, ValueError):
     POLL_INTERVAL_SEC = 45
+try:
+    RECENT_TRADES_PAGE_SIZE = max(10, int(os.getenv("RECENT_TRADES_PAGE_SIZE", "100")))
+except (TypeError, ValueError):
+    RECENT_TRADES_PAGE_SIZE = 100
+try:
+    RECENT_TRADES_MAX_PAGES = max(1, int(os.getenv("RECENT_TRADES_MAX_PAGES", "5")))
+except (TypeError, ValueError):
+    RECENT_TRADES_MAX_PAGES = 5
+
+STARTUP_MODE = os.getenv("STARTUP_MODE", "resume").strip().lower()
+if STARTUP_MODE not in ("resume", "live_safe"):
+    STARTUP_MODE = "resume"
 
 # Sizing
 
@@ -60,6 +72,8 @@ MAX_TRADE_USD = _float_env("MAX_TRADE_USD", 0)  # 0 = no absolute cap, only % ca
 SLIPPAGE_FRACTION = _float_env("SLIPPAGE_FRACTION", 0.02)
 # SELL: default very wide so we follow target exits even if market dropped (floor 0.01).
 SELL_SLIPPAGE_FRACTION = _float_env("SELL_SLIPPAGE_FRACTION", 0.99)
+MAX_BUY_PRICE = _float_env("MAX_BUY_PRICE", 0.95)
+MAX_SPREAD_FRACTION = _float_env("MAX_SPREAD_FRACTION", 0.12)
 
 # Live CLOB: after this many failed posts (no orderID) for the same tx(es), mark seen and stop retrying. 0 = unlimited.
 try:
@@ -100,6 +114,11 @@ except (TypeError, ValueError):
 
 # Safety: test mode logs what would be done without placing orders
 TEST_MODE = os.getenv("TEST_MODE", "").strip().lower() in ("1", "true", "yes")
+ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "").strip()
+try:
+    ALERT_MIN_INTERVAL_SEC = max(0, int(os.getenv("ALERT_MIN_INTERVAL_SEC", "300")))
+except (TypeError, ValueError):
+    ALERT_MIN_INTERVAL_SEC = 300
 
 # CLOB client
 try:
@@ -151,6 +170,12 @@ def validate_config() -> list[str]:
         errors.append("SLIPPAGE_FRACTION should be in (0, 0.5)")
     if not (0 < SELL_SLIPPAGE_FRACTION <= 1.0):
         errors.append("SELL_SLIPPAGE_FRACTION should be in (0, 1]")
+    if not (0 < MAX_BUY_PRICE <= 0.99):
+        errors.append("MAX_BUY_PRICE should be in (0, 0.99]")
+    if not (0 <= MAX_SPREAD_FRACTION <= 1.0):
+        errors.append("MAX_SPREAD_FRACTION should be in [0, 1]")
     if _MIN_NOTIONAL_MODE_RAW not in ("", "floor", "skip"):
         errors.append("MIN_NOTIONAL_MODE must be 'floor' or 'skip'")
+    if STARTUP_MODE not in ("resume", "live_safe"):
+        errors.append("STARTUP_MODE must be 'resume' or 'live_safe'")
     return errors

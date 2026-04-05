@@ -7,31 +7,39 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 from config import (
+    ALERT_WEBHOOK_URL,
     FUNDER_ADDRESS,
     MAX_LIVE_ORDER_ATTEMPTS,
+    MAX_BUY_PRICE,
     MAX_PRICE_DEVIATION_VS_TARGET,
+    MAX_SPREAD_FRACTION,
     MAX_TRADE_AGE_SEC,
     POLL_INTERVAL_SEC,
     PRICE_GUARD_APPLY_TO_SELL,
     PRICE_GUARD_ENABLED,
+    RECENT_TRADES_MAX_PAGES,
+    RECENT_TRADES_PAGE_SIZE,
     REQUIRE_CLOB_BALANCE_FOR_SELL,
     SELL_SLIPPAGE_FRACTION,
     SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN,
     SLIPPAGE_FRACTION,
+    STARTUP_MODE,
     TARGET_WALLET,
     TEST_MODE,
     validate_config,
 )
 from data_api import get_trades, get_portfolio_value
 from executor import (
+    get_bid_ask_prices,
     get_collateral_balance_usdc,
     get_conditional_token_balance_shares,
     get_current_price,
     place_market_order,
 )
+from notifier import send_alert
 from risk_guards import is_group_too_old, is_trade_too_old, price_guard_allows, vwap_price_buy_group
 from sizing import compute_my_notional
 from state import is_already_seen, mark_seen, mark_seen_batch, note_live_order_failure
@@ -40,6 +48,11 @@ LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 TRADES_LOG_HEADER = "timestamp,side,outcome,market_title,notional_usd,price,shares,mode"
+
+
+def _utc_now() -> datetime:
+    """Timezone-aware UTC now for logs and filenames."""
+    return datetime.now(UTC)
 
 
 def _normalize_outcome(trade: dict) -> str:
@@ -61,13 +74,13 @@ def _append_trade_log(side: str, outcome: str, title: str, notional_usd: float, 
     if price <= 0:
         return
     shares = notional_usd / price
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    ts = _utc_now().strftime("%Y-%m-%d %H:%M:%S")
     raw = (title or "").strip()
     safe_title = raw.replace('"', '""')
     if "," in safe_title or "\n" in safe_title or '"' in raw:
         safe_title = f'"{safe_title}"'
     line = f"{ts},{side},{outcome},{safe_title},{notional_usd:.2f},{price:.4f},{shares:.4f},{mode}\n"
-    log_path = os.path.join(LOG_DIR, f"trades_{datetime.utcnow().strftime('%Y-%m-%d')}.csv")
+    log_path = os.path.join(LOG_DIR, f"trades_{_utc_now().strftime('%Y-%m-%d')}.csv")
     try:
         write_header = not os.path.isfile(log_path)
         with open(log_path, "a", encoding="utf-8") as f:
@@ -80,7 +93,7 @@ def _append_trade_log(side: str, outcome: str, title: str, notional_usd: float, 
 
 def _setup_logging() -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
-    log_file = os.path.join(LOG_DIR, f"bot_{datetime.utcnow().strftime('%Y-%m-%d')}.log")
+    log_file = os.path.join(LOG_DIR, f"bot_{_utc_now().strftime('%Y-%m-%d')}.log")
     fmt = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
     root = logging.getLogger()
     root.setLevel(logging.INFO)
@@ -133,6 +146,7 @@ _theoretical_positions: dict[str, dict] = {}  # token_id -> {"shares": float, "e
 # Throttle balance logging when idle: log every N-th poll if no new trades to mirror
 _poll_count = 0
 IDLE_LOG_EVERY_N_POLLS = 10
+_startup_window_initialized = False
 
 
 def _apply_theoretical_trade(asset: str, side: str, notional: float, price: float) -> None:
@@ -178,6 +192,20 @@ def _log_theoretical_pnl() -> None:
         pnl,
         100.0 * pnl / THEORETICAL_START if THEORETICAL_START else 0,
     )
+
+
+def _get_recent_trades() -> list[dict]:
+    """
+    Fetch a wider recent window than a single page so we can detect "bought then sold"
+    catch-up batches and avoid entering trades that are already closed.
+    """
+    all_trades: list[dict] = []
+    for page in range(RECENT_TRADES_MAX_PAGES):
+        batch = get_trades(limit=RECENT_TRADES_PAGE_SIZE, offset=page * RECENT_TRADES_PAGE_SIZE)
+        if not batch:
+            break
+        all_trades.extend(batch)
+    return sorted(all_trades, key=lambda t: t.get("timestamp") or 0)
 
 
 def _place_one(
@@ -241,12 +269,36 @@ def _pre_trade_allows(
     else:
         if is_trade_too_old(trade_or_group, float(MAX_TRADE_AGE_SEC)):
             return False, f"trade older than MAX_TRADE_AGE_SEC ({MAX_TRADE_AGE_SEC}s)"
+    current: float | None = None
+    need_current_price = side.upper() == "BUY" or (
+        PRICE_GUARD_ENABLED
+        and MAX_PRICE_DEVIATION_VS_TARGET > 0
+        and (side.upper() != "SELL" or PRICE_GUARD_APPLY_TO_SELL)
+    )
+    if need_current_price:
+        current = get_current_price(asset)
+    if side.upper() == "BUY":
+        effective_price = current if current is not None else reference_price
+        if effective_price >= MAX_BUY_PRICE:
+            return False, f"buy price {effective_price:.4f} >= MAX_BUY_PRICE ({MAX_BUY_PRICE:.4f})"
+        if MAX_SPREAD_FRACTION > 0:
+            best_bid, best_ask = get_bid_ask_prices(asset)
+            if (
+                best_bid is not None
+                and best_ask is not None
+                and best_bid > 0
+                and best_ask >= best_bid
+            ):
+                mid = (best_bid + best_ask) / 2.0
+                if mid > 0:
+                    spread_frac = (best_ask - best_bid) / mid
+                    if spread_frac > MAX_SPREAD_FRACTION:
+                        return False, f"spread {spread_frac:.1%} > MAX_SPREAD_FRACTION ({MAX_SPREAD_FRACTION:.1%})"
     if (
         PRICE_GUARD_ENABLED
         and MAX_PRICE_DEVIATION_VS_TARGET > 0
         and (side.upper() != "SELL" or PRICE_GUARD_APPLY_TO_SELL)
     ):
-        current = get_current_price(asset)
         ok, detail = price_guard_allows(
             side, reference_price, current, MAX_PRICE_DEVIATION_VS_TARGET
         )
@@ -280,11 +332,10 @@ def _log_portfolio_line(
 
 def run_once() -> None:
     """Poll target trades, mirror any new ones with proportional sizing."""
-    global _poll_count
+    global _poll_count, _startup_window_initialized
     _poll_count += 1
 
-    trades = get_trades(limit=50)
-    trades = sorted(trades, key=lambda t: t.get("timestamp") or 0) if trades else []
+    trades = _get_recent_trades()
 
     # Data API /value = mark-to-market of open positions only (0 if no positions).
     # CLOB collateral = USDC cash available for trading — both matter for bankroll sizing.
@@ -331,6 +382,27 @@ def run_once() -> None:
         if not asset or not condition_id:
             continue
         unseen_by_asset.setdefault(asset, []).append(trade)
+
+    if STARTUP_MODE == "live_safe" and not _startup_window_initialized:
+        boot_hashes = [
+            t.get("transactionHash") or t.get("transaction_hash")
+            for group in unseen_by_asset.values()
+            for t in group
+            if (t.get("transactionHash") or t.get("transaction_hash"))
+        ]
+        if boot_hashes:
+            mark_seen_batch(boot_hashes)
+            logger.info(
+                "Startup live-safe mode: marked %s visible trade(s) seen; only future trades will be mirrored",
+                len(boot_hashes),
+            )
+            send_alert(
+                "startup_live_safe",
+                f"Startup live-safe mode skipped {len(boot_hashes)} visible trade(s); bot will mirror only new trades.",
+            )
+        _startup_window_initialized = True
+        return
+    _startup_window_initialized = True
 
     # When we have new trades to mirror, always log balance. When idle (all seen), only every N-th poll.
     should_log_balance = len(unseen_by_asset) > 0 or _poll_count % IDLE_LOG_EVERY_N_POLLS == 1
@@ -417,6 +489,10 @@ def run_once() -> None:
                     MAX_LIVE_ORDER_ATTEMPTS,
                     (tx_hash or "")[:18],
                 )
+                send_alert(
+                    "live_order_give_up",
+                    f"Giving up after {MAX_LIVE_ORDER_ATTEMPTS} failed live orders for tx {(tx_hash or '')[:18]}...",
+                )
                 mark_seen(tx_hash)
             continue
 
@@ -493,6 +569,10 @@ def run_once() -> None:
                     MAX_LIVE_ORDER_ATTEMPTS,
                     len(group_hashes),
                 )
+                send_alert(
+                    "catchup_order_give_up",
+                    f"Giving up catch-up after {MAX_LIVE_ORDER_ATTEMPTS} failed live orders; marking {len(group_hashes)} tx(es) seen.",
+                )
                 mark_seen_batch(group_hashes)
             continue
 
@@ -529,6 +609,15 @@ def main() -> None:
         SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN,
         MAX_LIVE_ORDER_ATTEMPTS if MAX_LIVE_ORDER_ATTEMPTS > 0 else "unlimited",
         REQUIRE_CLOB_BALANCE_FOR_SELL,
+    )
+    logger.info(
+        "Late-entry controls: startup_mode=%s | recent_window=%sx%s | max_buy_price=%.2f | max_spread=%s | alerts=%s",
+        STARTUP_MODE,
+        RECENT_TRADES_MAX_PAGES,
+        RECENT_TRADES_PAGE_SIZE,
+        MAX_BUY_PRICE,
+        f"{100.0 * MAX_SPREAD_FRACTION:.0f}%%" if MAX_SPREAD_FRACTION > 0 else "off",
+        bool(ALERT_WEBHOOK_URL),
     )
     while True:
         try:

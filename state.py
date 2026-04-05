@@ -16,23 +16,36 @@ MAX_SEEN = 10_000  # Keep last N to avoid unbounded growth
 
 # In-process cache (single bot process). None = not loaded from disk yet.
 _seen_cache: set[str] | None = None
+_seen_order_cache: list[str] | None = None
 _failure_counts_cache: dict[str, int] | None = None
 
 
 def clear_seen_memory_cache() -> None:
     """Drop in-memory state; next access reloads from disk."""
-    global _seen_cache, _failure_counts_cache
+    global _seen_cache, _seen_order_cache, _failure_counts_cache
     _seen_cache = None
+    _seen_order_cache = None
     _failure_counts_cache = None
 
 
-def _load_full_from_disk() -> tuple[set[str], dict[str, int]]:
+def _load_full_from_disk() -> tuple[set[str], list[str], dict[str, int]]:
     if not os.path.isfile(STATE_FILE):
-        return set(), {}
+        return set(), [], {}
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
             data = json.load(f)
-        seen = set(data.get("seen_tx_hashes", []))
+        raw_seen = data.get("seen_tx_hashes", [])
+        seen_order: list[str] = []
+        seen: set[str] = set()
+        if isinstance(raw_seen, list):
+            for item in raw_seen:
+                if not item:
+                    continue
+                h = str(item)
+                if h in seen:
+                    continue
+                seen.add(h)
+                seen_order.append(h)
         raw_fc = data.get("order_failure_counts") or {}
         failures: dict[str, int] = {}
         if isinstance(raw_fc, dict):
@@ -45,18 +58,21 @@ def _load_full_from_disk() -> tuple[set[str], dict[str, int]]:
                     continue
                 if iv > 0:
                     failures[str(k)] = iv
-        return seen, failures
+        return seen, seen_order, failures
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Could not load state file: %s", e)
-        return set(), {}
+        return set(), [], {}
 
 
 def _ensure_loaded() -> None:
-    global _seen_cache, _failure_counts_cache
+    global _seen_cache, _seen_order_cache, _failure_counts_cache
     if _seen_cache is None:
-        seen, failures = _load_full_from_disk()
+        seen, seen_order, failures = _load_full_from_disk()
         _seen_cache = seen
+        _seen_order_cache = seen_order
         _failure_counts_cache = failures
+    if _seen_order_cache is None:
+        _seen_order_cache = []
     if _failure_counts_cache is None:
         _failure_counts_cache = {}
 
@@ -73,16 +89,22 @@ def _get_failure_counts() -> dict[str, int]:
     return _failure_counts_cache
 
 
+def _get_seen_order() -> list[str]:
+    _ensure_loaded()
+    assert _seen_order_cache is not None
+    return _seen_order_cache
+
+
 def _save_state() -> None:
     _ensure_loaded()
     seen = _get_seen()
+    seen_order = _get_seen_order()
     failures = _get_failure_counts()
     os.makedirs(STATE_DIR, exist_ok=True)
-    lst = list(seen)
-    if len(lst) > MAX_SEEN:
-        lst = lst[-MAX_SEEN:]
+    if len(seen_order) > MAX_SEEN:
+        seen_order[:] = seen_order[-MAX_SEEN:]
         seen.clear()
-        seen.update(lst)
+        seen.update(seen_order)
     # Drop failure rows for hashes we've already seen (housekeeping)
     for h in list(failures.keys()):
         if h in seen:
@@ -93,7 +115,7 @@ def _save_state() -> None:
             json.dump(
                 {
                     "target": TARGET_WALLET,
-                    "seen_tx_hashes": lst,
+                    "seen_tx_hashes": seen_order,
                     "order_failure_counts": fc_out,
                 },
                 f,
@@ -113,8 +135,11 @@ def mark_seen(transaction_hash: str) -> None:
     if not transaction_hash:
         return
     seen = _get_seen()
+    seen_order = _get_seen_order()
     failures = _get_failure_counts()
-    seen.add(transaction_hash)
+    if transaction_hash not in seen:
+        seen.add(transaction_hash)
+        seen_order.append(transaction_hash)
     failures.pop(transaction_hash, None)
     _save_state()
 
@@ -125,9 +150,12 @@ def mark_seen_batch(transaction_hashes: list[str]) -> None:
     if not hashes:
         return
     seen = _get_seen()
+    seen_order = _get_seen_order()
     failures = _get_failure_counts()
     for h in hashes:
-        seen.add(h)
+        if h not in seen:
+            seen.add(h)
+            seen_order.append(h)
         failures.pop(h, None)
     _save_state()
 
