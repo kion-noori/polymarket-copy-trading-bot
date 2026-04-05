@@ -333,6 +333,39 @@ If you are on a stable VPS and want to follow active positions, `resume` is usua
 
 ---
 
+## Alerts
+
+The bot can send simple JSON webhook alerts for important events like:
+
+- repeated live-order failures where it gives up
+- `STARTUP_MODE=live_safe` skipping visible trades on boot
+
+Set these in `.env`:
+
+```dotenv
+ALERT_WEBHOOK_URL=https://your-webhook-endpoint
+ALERT_MIN_INTERVAL_SEC=300
+```
+
+The bot sends a `POST` with JSON like:
+
+```json
+{"kind":"live_order_give_up","text":"Giving up after 10 failed live orders for tx 0x1234...","ts":1712345678}
+```
+
+Easy ways to receive alerts:
+
+1. Discord
+   Create a channel webhook in Server Settings -> Integrations -> Webhooks, then paste the webhook URL into `ALERT_WEBHOOK_URL`.
+2. Slack
+   Create an Incoming Webhook app, choose a channel, and paste that webhook URL into `ALERT_WEBHOOK_URL`.
+3. Pipedream / Zapier / Make
+   Use a catch-all webhook URL there, then forward alerts to email, SMS, Telegram, or whatever you prefer.
+
+If you want the fastest setup, Discord is usually the easiest. Create a private channel just for the bot, add a webhook, and you’ll get near-real-time notifications in that channel.
+
+---
+
 ## State & edge cases
 
 - **State file:** `state/seen_trades.json` stores `seen_tx_hashes` and optional `order_failure_counts` for live retry / give-up (gitignored).  
