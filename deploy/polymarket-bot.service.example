@@ -1,5 +1,8 @@
 # Copy to /etc/systemd/system/polymarket-bot.service (adjust User + paths).
 # sudo systemctl daemon-reload && sudo systemctl enable --now polymarket-bot
+#
+# Example below matches the simplest root-based setup used in the README walkthrough.
+# If you create a non-root deploy user instead, change User/Group/WorkingDirectory/ExecStart.
 
 [Unit]
 Description=Polymarket copy-trading bot
@@ -8,10 +11,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=ubuntu
-Group=ubuntu
-WorkingDirectory=/home/ubuntu/polymarket-copy-trading-bot
-ExecStart=/home/ubuntu/polymarket-copy-trading-bot/.venv/bin/python main.py
+User=root
+Group=root
+WorkingDirectory=/root/polymarket-copy-trading-bot
+ExecStart=/root/polymarket-copy-trading-bot/.venv/bin/python main.py
 Restart=always
 RestartSec=15
 
