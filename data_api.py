@@ -38,7 +38,7 @@ def get_trades(user: str | None = None, limit: int = 100, offset: int = 0) -> li
     if not addr:
         return []
     url = f"{DATA_API_BASE}/trades"
-    params = {"user": addr, "limit": limit, "offset": offset, "takerOnly": True}
+    params = {"user": addr, "limit": limit, "offset": offset}
     r = _request_with_retry("GET", url, params=params, timeout=30)
     if r is None:
         return []
