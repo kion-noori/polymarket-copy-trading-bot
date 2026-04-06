@@ -223,7 +223,7 @@ def _place_one(
     test mode always True after simulation; live mode True only when order returns orderID.
     """
     shares = my_notional / worst_price if worst_price > 0 else 0
-    market_short = ((title or "").strip() or "Unknown market")[:50]
+    market_short = (title or "").strip() or "Unknown market"
     logger.info(
         "Trade: %s %s | %s | $%.2f @ %.3f | ~%.2f shares",
         side,
