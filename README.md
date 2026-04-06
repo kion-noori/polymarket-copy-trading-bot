@@ -30,6 +30,8 @@ For production:
 - run under `systemd`
 - start with `TEST_MODE=1`
 - use a small bankroll first
+- see [docs/DEPLOYMENT_NOTES.md](docs/DEPLOYMENT_NOTES.md) for the current live deployment snapshot
+- see [docs/OPS_NOTES.md](docs/OPS_NOTES.md) for daily operational commands
 
 ---
 
