@@ -4,6 +4,43 @@
 
 This README is written for **both product and engineering** readers: high-level behavior up front, setup and formulas below.
 
+**Status:** live-trading capable, VPS-tested, and designed for a single operator copying one target wallet with explicit guardrails. This is experimental personal trading infrastructure, not financial advice.
+
+---
+
+## Quick Start
+
+```bash
+cp .env.example .env
+# fill in TARGET_WALLET / FUNDER_ADDRESS / PRIVATE_KEY / API creds
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+python scripts/check_env.py
+.venv/bin/python scripts/check_live_ready.py
+
+python main.py
+```
+
+For production:
+
+- use a VPS in a region that returns `"blocked": false` from `https://polymarket.com/api/geoblock`
+- run under `systemd`
+- start with `TEST_MODE=1`
+- use a small bankroll first
+
+---
+
+## What This Bot Does Not Do
+
+- It does **not** guarantee fills.
+- It does **not** short markets or sell positions you do not hold.
+- It does **not** perfectly reconstruct all historical target intent after long downtime.
+- It does **not** auto-redeem resolved markets.
+  That means: if a Polymarket market resolves and your account is entitled to winnings, this bot will **not** automatically claim/redeem those proceeds for you. You still need to redeem through Polymarket’s normal flow or whatever manual process you use.
+
 ---
 
 ## At a glance
@@ -57,7 +94,7 @@ This README is written for **both product and engineering** readers: high-level 
 2. Run in **test mode** → confirm logs and optional `logs/trades_*.csv` look right.  
 3. Fund your Polymarket / CLOB balance; verify logs show **positions + CLOB cash**.  
 4. Turn off test mode → bot places real orders; you confirm fills on Polymarket.  
-5. Leave the process running on a machine that **stays awake** (or use a small always-on box).
+5. For production, run it on a VPS via `systemd` so it survives disconnects, sleep, and reboots.
 
 ---
 
@@ -122,6 +159,29 @@ Full variable list: [Env reference](#env-reference-all-variables) in Setup below
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest tests/ -q
+```
+
+### Common Commands
+
+```bash
+# Connect to VPS
+ssh root@YOUR_SERVER_IP
+
+# See live service logs
+journalctl -u polymarket-bot -f
+
+# See recent service logs
+journalctl -u polymarket-bot -n 200
+
+# Check service status
+systemctl status polymarket-bot
+
+# Restart after changing .env or code
+systemctl restart polymarket-bot
+
+# Stop / start
+systemctl stop polymarket-bot
+systemctl start polymarket-bot
 ```
 
 ---
@@ -225,6 +285,13 @@ chmod 600 .env
 2. `sudo cp deploy/polymarket-bot.service.example /etc/systemd/system/polymarket-bot.service`
 3. `sudo systemctl daemon-reload && sudo systemctl enable --now polymarket-bot`
 4. Logs: `journalctl -u polymarket-bot -f` (and `logs/` under the repo if you need CSV).
+
+### How Live Deployment Works
+
+- Local laptop mode is best for setup and dry runs.
+- VPS + `systemd` is the recommended production mode.
+- Once started under `systemd`, the bot keeps running even if your SSH session closes or your laptop sleeps.
+- `journalctl -u polymarket-bot -f` lets you reconnect later and watch logs again.
 
 **Travel:** Your laptop IP and your **VPS IP** are checked independently. A region that works on Wi‑Fi may still be blocked from the datacenter. Always run `curl` geoblock **from the VPS** before relying on live `TEST_MODE=0`. This is not legal advice.
 
@@ -333,6 +400,15 @@ If you are on a stable VPS and want to follow active positions, `resume` is usua
 
 ---
 
+## Operational Safety
+
+- Run `python scripts/check_env.py` before going live.
+- Run `.venv/bin/python scripts/check_live_ready.py` before going live.
+- Verify the VPS geoblock response from the VPS itself.
+- Start with `TEST_MODE=1`.
+- Start with a small bankroll.
+- Rotate exposed passwords and prefer SSH keys for long-term access.
+
 ## Alerts
 
 The bot can send simple JSON webhook alerts for important events like:
@@ -388,7 +464,7 @@ For a stronger authenticated readiness check that derives the signer address fro
 
 - **State file:** `state/seen_trades.json` stores `seen_tx_hashes` and optional `order_failure_counts` for live retry / give-up (gitignored).  
 - **Target sells, you hold** → we attempt a proportional SELL so you exit together.  
-- **Market resolves** → Bot does not auto-redeem; use Polymarket UI.  
+- **Market resolves** → Bot does not auto-redeem. If a market resolves and you are owed proceeds, you must still redeem/claim those winnings separately through Polymarket’s normal redemption flow.  
 - **FOK orders** → Fill completely or cancel; no partial fills by design.  
 - **API flakiness** → Retries on Data API and CLOB calls; main loop survives a bad cycle and continues polling.  
 - **Skipped mirrors** (price guard, age, sizing=0) → Transaction is still **marked seen** so the same fill isn’t retried every poll.  
