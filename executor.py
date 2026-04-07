@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 # Retry on transient API errors
 ORDER_RETRIES = 3
 ORDER_RETRY_DELAY_SEC = 3
+BUY_RETRY_PRICE_STEP_FRACTION = 0.03
+BUY_MAX_RETRY_PRICE_MULTIPLIER = 1.15
 
 _client: ClobClient | None = None
 
@@ -216,15 +218,22 @@ def place_market_order(
     last_err = None
     for attempt in range(ORDER_RETRIES):
         try:
+            attempt_price = worst_price
+            if side_val == BUY and attempt > 0:
+                retry_multiplier = min(
+                    1.0 + BUY_RETRY_PRICE_STEP_FRACTION * attempt,
+                    BUY_MAX_RETRY_PRICE_MULTIPLIER,
+                )
+                attempt_price = min(0.99, worst_price * retry_multiplier)
             if side_val == BUY:
                 amount = notional_usd
             else:
-                amount = notional_usd / worst_price if worst_price > 0 else notional_usd
+                amount = notional_usd / attempt_price if attempt_price > 0 else notional_usd
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 amount=amount,
                 side=side_val,
-                price=worst_price,
+                price=attempt_price,
                 order_type=OrderType.FOK,
             )
             signed = client.create_market_order(order_args, options=options)
@@ -234,7 +243,13 @@ def place_market_order(
             return {"orderID": getattr(resp, "orderID", ""), "status": getattr(resp, "status", "unknown")}
         except Exception as e:
             last_err = e
-            logger.warning("place_market_order attempt %s/%s failed: %s", attempt + 1, ORDER_RETRIES, e)
+            logger.warning(
+                "place_market_order attempt %s/%s failed at price %.4f: %s",
+                attempt + 1,
+                ORDER_RETRIES,
+                attempt_price,
+                e,
+            )
             if attempt < ORDER_RETRIES - 1:
                 time.sleep(ORDER_RETRY_DELAY_SEC)
     logger.exception("place_market_order failed after %s attempts: %s", ORDER_RETRIES, last_err)

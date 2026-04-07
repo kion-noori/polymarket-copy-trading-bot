@@ -121,22 +121,31 @@ def _skip_sell_insufficient_shares(
     token_id: str,
     my_notional: float,
     worst_price: float,
-) -> tuple[bool, float | None, float]:
+) -> tuple[bool, float | None, float, float]:
     """
-    If we can read CLOB balance and it's below shares needed for this SELL, return (True, balance, need).
-    If balance unknown (None), return (False, None, need) — caller attempts sell anyway.
+    Resolve executable SELL size from actual held shares.
+
+    Returns:
+    - skip: True only when we know there are effectively no shares to sell.
+    - balance: conditional-token balance in shares, or None if unavailable.
+    - need: desired shares based on mirrored target sizing.
+    - executable_notional: capped notional we can actually sell at worst_price.
+
+    If balance is unknown (None), caller attempts the original sell anyway.
     """
     if worst_price <= 0:
-        return False, None, 0.0
+        return False, None, 0.0, 0.0
     need = my_notional / worst_price
     if need <= 0:
-        return False, None, need
+        return False, None, need, my_notional
     bal = get_conditional_token_balance_shares(token_id)
     if bal is None:
-        return False, None, need
-    if bal + SELL_SHARES_EPSILON < need:
-        return True, bal, need
-    return False, bal, need
+        return False, None, need, my_notional
+    executable_shares = min(bal, need)
+    executable_notional = executable_shares * worst_price
+    if executable_shares <= SELL_SHARES_EPSILON:
+        return True, bal, need, 0.0
+    return False, bal, need, executable_notional
 
 # Theoretical portfolio (test mode only): simulate $500 and track PnL of "would have" trades
 THEORETICAL_START = 500.0
@@ -453,7 +462,7 @@ def run_once() -> None:
                 and not TEST_MODE
                 and REQUIRE_CLOB_BALANCE_FOR_SELL
             ):
-                skip_sell, have_shares, need_shares = _skip_sell_insufficient_shares(
+                skip_sell, have_shares, need_shares, sell_notional = _skip_sell_insufficient_shares(
                     asset, my_notional, worst_price
                 )
                 if skip_sell:
@@ -466,6 +475,19 @@ def run_once() -> None:
                     )
                     mark_seen(tx_hash)
                     continue
+                if (
+                    have_shares is not None
+                    and sell_notional + (SELL_SHARES_EPSILON * worst_price) < my_notional
+                ):
+                    logger.info(
+                        "Cap SELL mirror to held shares: have %.6f, need ~%.6f -> selling %.6f shares | %s | tx %s...",
+                        have_shares,
+                        need_shares,
+                        sell_notional / worst_price if worst_price > 0 else 0.0,
+                        ((trade.get("title") or "").strip() or "Unknown")[:50],
+                        (tx_hash or "")[:14],
+                    )
+                    my_notional = sell_notional
                 if have_shares is None:
                     logger.warning(
                         "Could not read CLOB balance for SELL; attempting order anyway | token=%s...",

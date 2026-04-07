@@ -22,27 +22,41 @@ def test_skip_sell_when_balance_below_need(main_mod, monkeypatch):
     monkeypatch.setattr(
         main_mod, "get_conditional_token_balance_shares", lambda tid: 5.0
     )
-    skip, bal, need = main_mod._skip_sell_insufficient_shares("tok", 100.0, 0.5)
-    assert skip is True
+    skip, bal, need, executable = main_mod._skip_sell_insufficient_shares("tok", 100.0, 0.5)
+    assert skip is False
     assert bal == 5.0
     assert need == 200.0
+    assert executable == 2.5
 
 
 def test_no_skip_when_balance_adequate(main_mod, monkeypatch):
     monkeypatch.setattr(
         main_mod, "get_conditional_token_balance_shares", lambda tid: 300.0
     )
-    skip, bal, need = main_mod._skip_sell_insufficient_shares("tok", 100.0, 0.5)
+    skip, bal, need, executable = main_mod._skip_sell_insufficient_shares("tok", 100.0, 0.5)
     assert skip is False
     assert bal == 300.0
     assert need == 200.0
+    assert executable == 100.0
 
 
 def test_no_skip_when_balance_unknown(main_mod, monkeypatch):
     monkeypatch.setattr(
         main_mod, "get_conditional_token_balance_shares", lambda tid: None
     )
-    skip, bal, need = main_mod._skip_sell_insufficient_shares("tok", 100.0, 0.5)
+    skip, bal, need, executable = main_mod._skip_sell_insufficient_shares("tok", 100.0, 0.5)
     assert skip is False
     assert bal is None
     assert need == 200.0
+    assert executable == 100.0
+
+
+def test_skip_sell_when_balance_effectively_zero(main_mod, monkeypatch):
+    monkeypatch.setattr(
+        main_mod, "get_conditional_token_balance_shares", lambda tid: 0.0
+    )
+    skip, bal, need, executable = main_mod._skip_sell_insufficient_shares("tok", 100.0, 0.5)
+    assert skip is True
+    assert bal == 0.0
+    assert need == 200.0
+    assert executable == 0.0
