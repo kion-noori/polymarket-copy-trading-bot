@@ -60,3 +60,9 @@ def test_skip_sell_when_balance_effectively_zero(main_mod, monkeypatch):
     assert bal == 0.0
     assert need == 200.0
     assert executable == 0.0
+
+
+def test_is_dust_sell_thresholds(main_mod):
+    assert main_mod._is_dust_sell(0.05, 0.5) is True
+    assert main_mod._is_dust_sell(0.50, 100.0) is True
+    assert main_mod._is_dust_sell(0.50, 0.5) is False

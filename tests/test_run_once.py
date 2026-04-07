@@ -117,6 +117,40 @@ def test_run_once_single_sell_without_position_marks_seen_and_skips_order(main_m
     assert st.is_already_seen("0xsell-only") is True
 
 
+def test_run_once_single_sell_dust_remainder_marks_seen_and_skips_order(main_mod, monkeypatch):
+    main, st = main_mod
+    trade = {
+        "transactionHash": "0xsell-dust",
+        "side": "SELL",
+        "size": 20,
+        "price": 0.5,
+        "asset": "asset-dust",
+        "conditionId": "cond-dust",
+        "timestamp": 100,
+        "title": "Dust Market",
+    }
+
+    placed = {"called": False}
+    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [trade] if offset == 0 else [])
+    monkeypatch.setattr(
+        main,
+        "get_portfolio_value",
+        lambda user: 1000.0 if user == main.FUNDER_ADDRESS else 2000.0,
+    )
+    monkeypatch.setattr(main, "get_collateral_balance_usdc", lambda: 0.0)
+    monkeypatch.setattr(main, "get_conditional_token_balance_shares", lambda token_id: 0.008517)
+    monkeypatch.setattr(
+        main,
+        "place_market_order",
+        lambda **kwargs: placed.__setitem__("called", True) or {"orderID": "x"},
+    )
+
+    main.run_once()
+
+    assert placed["called"] is False
+    assert st.is_already_seen("0xsell-dust") is True
+
+
 def test_run_once_failed_live_order_retries_then_abandons(main_mod, monkeypatch):
     main, st = main_mod
     trade = {
@@ -229,3 +263,38 @@ def test_run_once_live_safe_startup_marks_visible_trades_seen(tmp_path, monkeypa
 
     assert placed["count"] == 0
     assert st.is_already_seen("0xstartup") is True
+
+
+def test_run_once_catchup_sell_only_places_order_when_shares_exist(main_mod, monkeypatch):
+    main, st = main_mod
+    sell_trade = {
+        "transactionHash": "0xcatchup-sell",
+        "side": "SELL",
+        "size": 10,
+        "price": 0.5,
+        "asset": "asset-catchup-sell",
+        "conditionId": "cond-catchup-sell",
+        "timestamp": 100,
+        "title": "Market Sell Catchup",
+    }
+
+    placed: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [sell_trade] if offset == 0 else [])
+    monkeypatch.setattr(
+        main,
+        "get_portfolio_value",
+        lambda user: 1000.0 if user == main.FUNDER_ADDRESS else 2000.0,
+    )
+    monkeypatch.setattr(main, "get_collateral_balance_usdc", lambda: 0.0)
+    monkeypatch.setattr(main, "get_conditional_token_balance_shares", lambda token_id: 100.0)
+    monkeypatch.setattr(
+        main,
+        "place_market_order",
+        lambda **kwargs: placed.append((kwargs["side"], kwargs["token_id"])) or {"orderID": "x"},
+    )
+
+    main.run_once()
+
+    assert placed == [("SELL", "asset-catchup-sell")]
+    assert st.is_already_seen("0xcatchup-sell") is True

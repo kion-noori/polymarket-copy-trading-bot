@@ -115,6 +115,8 @@ MIN_NET_NOTIONAL = 0.50
 
 # Float tolerance when comparing CLOB share balance vs sell size
 SELL_SHARES_EPSILON = 1e-6
+MIN_EXECUTABLE_SELL_NOTIONAL = 0.10
+MIN_EXECUTABLE_SELL_SHARES = 0.01
 
 
 def _skip_sell_insufficient_shares(
@@ -146,6 +148,16 @@ def _skip_sell_insufficient_shares(
     if executable_shares <= SELL_SHARES_EPSILON:
         return True, bal, need, 0.0
     return False, bal, need, executable_notional
+
+
+def _is_dust_sell(my_notional: float, worst_price: float) -> bool:
+    if worst_price <= 0:
+        return True
+    sell_shares = my_notional / worst_price
+    return (
+        my_notional < MIN_EXECUTABLE_SELL_NOTIONAL
+        or sell_shares < MIN_EXECUTABLE_SELL_SHARES
+    )
 
 # Theoretical portfolio (test mode only): simulate $500 and track PnL of "would have" trades
 THEORETICAL_START = 500.0
@@ -496,6 +508,17 @@ def run_once() -> None:
                         "Could not read CLOB balance for SELL; attempting order anyway | token=%s...",
                         asset[:16],
                     )
+                sell_shares = my_notional / worst_price if worst_price > 0 else 0.0
+                if _is_dust_sell(my_notional, worst_price):
+                    logger.info(
+                        "Skip SELL mirror (dust remainder): $%.4f / %.6f shares | %s | tx %s...",
+                        my_notional,
+                        sell_shares,
+                        ((trade.get("title") or "").strip() or "Unknown")[:50],
+                        (tx_hash or "")[:14],
+                    )
+                    mark_seen(tx_hash)
+                    continue
             if _place_one(
                 asset,
                 condition_id,
@@ -601,13 +624,83 @@ def run_once() -> None:
                 mark_seen_batch(group_hashes)
             continue
 
-        # Only SELLs: skip (we weren't in the position when they sold; mirroring would be wrong)
+        # Only SELLs: if we hold shares, try to mirror the exit; otherwise skip.
         if has_sell:
-            mark_seen_batch(group_hashes)
-            logger.info(
-                "Catch-up: skip asset %s... (only SELLs; not mirroring without position)",
-                asset[:16],
+            net_notional = sum(
+                float(t.get("size", 0)) * float(t.get("price", 0))
+                for t in group
+                if (t.get("side") or "").upper() == "SELL"
             )
+            last_trade = group[-1]
+            condition_id = last_trade.get("conditionId") or last_trade.get("condition_id")
+            last_price = float(last_trade.get("price", 0.5))
+            worst_price = max(0.01, last_price * (1 - SELL_SLIPPAGE_FRACTION))
+            my_notional = compute_my_sell_notional(net_notional, my_value, target_value)
+            if my_notional <= 0:
+                mark_seen_batch(group_hashes)
+                logger.info(
+                    "Catch-up: skip SELL asset %s... (size=0)",
+                    asset[:16],
+                )
+                continue
+            skip_sell, have_shares, need_shares, sell_notional = _skip_sell_insufficient_shares(
+                asset, my_notional, worst_price
+            )
+            if skip_sell:
+                mark_seen_batch(group_hashes)
+                logger.info(
+                    "Catch-up: skip SELL asset %s... (no CLOB position: have %.6f, need ~%.6f)",
+                    asset[:16],
+                    have_shares if have_shares is not None else 0.0,
+                    need_shares,
+                )
+                continue
+            if (
+                have_shares is not None
+                and sell_notional + (SELL_SHARES_EPSILON * worst_price) < my_notional
+            ):
+                logger.info(
+                    "Catch-up: cap SELL to held shares: have %.6f, need ~%.6f -> selling %.6f shares | %s",
+                    have_shares,
+                    need_shares,
+                    sell_notional / worst_price if worst_price > 0 else 0.0,
+                    ((last_trade.get("title") or "").strip() or "Unknown")[:50],
+                )
+                my_notional = sell_notional
+            sell_shares = my_notional / worst_price if worst_price > 0 else 0.0
+            if _is_dust_sell(my_notional, worst_price):
+                mark_seen_batch(group_hashes)
+                logger.info(
+                    "Catch-up: skip SELL dust remainder: $%.4f / %.6f shares | %s",
+                    my_notional,
+                    sell_shares,
+                    ((last_trade.get("title") or "").strip() or "Unknown")[:50],
+                )
+                continue
+            logger.info("Catch-up: net SELL notional=%.2f -> our notional=%.2f (one order)", net_notional, my_notional)
+            if _place_one(
+                asset,
+                condition_id,
+                "SELL",
+                my_notional,
+                worst_price,
+                last_trade.get("title", ""),
+                outcome=_normalize_outcome(last_trade),
+            ):
+                mark_seen_batch(group_hashes)
+            elif MAX_LIVE_ORDER_ATTEMPTS > 0 and note_live_order_failure(
+                group_hashes, MAX_LIVE_ORDER_ATTEMPTS
+            ):
+                logger.warning(
+                    "Giving up catch-up SELL after %s failed live orders; marking %s tx(es) seen",
+                    MAX_LIVE_ORDER_ATTEMPTS,
+                    len(group_hashes),
+                )
+                send_alert(
+                    "catchup_sell_order_give_up",
+                    f"Giving up catch-up SELL after {MAX_LIVE_ORDER_ATTEMPTS} failed live orders; marking {len(group_hashes)} tx(es) seen.",
+                )
+                mark_seen_batch(group_hashes)
 
 
 def main() -> None:
