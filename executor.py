@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 # Retry on transient API errors
 ORDER_RETRIES = 3
 ORDER_RETRY_DELAY_SEC = 3
-BUY_RETRY_PRICE_STEP_FRACTION = 0.03
-BUY_MAX_RETRY_PRICE_MULTIPLIER = 1.15
+BUY_RETRY_PRICE_STEP_POINTS = 0.02
+BUY_MAX_RETRY_PRICE_BONUS = 0.05
 
 _client: ClobClient | None = None
 
@@ -220,11 +220,11 @@ def place_market_order(
         try:
             attempt_price = worst_price
             if side_val == BUY and attempt > 0:
-                retry_multiplier = min(
-                    1.0 + BUY_RETRY_PRICE_STEP_FRACTION * attempt,
-                    BUY_MAX_RETRY_PRICE_MULTIPLIER,
+                retry_bonus = min(
+                    BUY_RETRY_PRICE_STEP_POINTS * attempt,
+                    BUY_MAX_RETRY_PRICE_BONUS,
                 )
-                attempt_price = min(0.99, worst_price * retry_multiplier)
+                attempt_price = min(0.99, worst_price + retry_bonus)
             if side_val == BUY:
                 amount = notional_usd
             else:

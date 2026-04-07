@@ -43,7 +43,7 @@ def test_buy_retries_widen_price(monkeypatch):
     resp = executor.place_market_order("tok", "cond", "BUY", 5.0, 0.714)
 
     assert resp == {"orderID": "abc", "status": "matched"}
-    assert fake_client.create_prices == [0.714, 0.73542, 0.75684]
+    assert fake_client.create_prices == [0.714, 0.734, 0.754]
 
 
 def test_sell_retry_keeps_same_price(monkeypatch):

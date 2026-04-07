@@ -34,3 +34,32 @@ def compute_my_notional(
             return 0.0
         return capped
     return max(capped, params.min_notional)
+
+
+def compute_my_sell_notional(
+    target_notional: float,
+    my_portfolio_value: float,
+    target_portfolio_value: float,
+) -> float:
+    """
+    Proportional sizing for SELLs without a minimum-floor bump.
+
+    For exits we want to mirror the target's sell fraction conservatively, not force
+    tiny target sells up to MIN_NOTIONAL the way entries do.
+    """
+    params = get_sizing_params()
+    if target_portfolio_value <= 0:
+        if SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN:
+            return 0.0
+        return 0.0
+    raw = (
+        target_notional
+        * (my_portfolio_value / target_portfolio_value)
+        * params.size_multiplier
+    )
+    capped = min(raw, my_portfolio_value * params.max_pct_per_trade)
+    if params.max_trade_usd > 0:
+        capped = min(capped, params.max_trade_usd)
+    if capped < 0:
+        return 0.0
+    return capped

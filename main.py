@@ -41,7 +41,7 @@ from executor import (
 )
 from notifier import send_alert
 from risk_guards import is_group_too_old, is_trade_too_old, price_guard_allows, vwap_price_buy_group
-from sizing import compute_my_notional
+from sizing import compute_my_notional, compute_my_sell_notional
 from state import is_already_seen, mark_seen, mark_seen_batch, note_live_order_failure
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
@@ -433,7 +433,10 @@ def run_once() -> None:
             price = float(trade.get("price", 0))
             condition_id = trade.get("conditionId") or trade.get("condition_id")
             target_notional = size * price
-            my_notional = compute_my_notional(target_notional, my_value, target_value)
+            if side == "SELL":
+                my_notional = compute_my_sell_notional(target_notional, my_value, target_value)
+            else:
+                my_notional = compute_my_notional(target_notional, my_value, target_value)
             if my_notional <= 0:
                 logger.info(
                     "Skip mirror (size=0): asset=%s... | target_value=$%.2f | "

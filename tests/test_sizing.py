@@ -46,3 +46,12 @@ def test_compute_my_notional_skip_dust(monkeypatch):
     importlib.reload(sizing)
     n = sizing.compute_my_notional(1.0, 500.0, 100_000.0)
     assert n == 0.0
+
+
+def test_compute_my_sell_notional_does_not_floor_up():
+    n = sizing.compute_my_sell_notional(1.0, 500.0, 100_000.0)
+    assert abs(n - 0.005) < 1e-9
+
+
+def test_compute_my_sell_notional_target_unknown_returns_zero():
+    assert sizing.compute_my_sell_notional(100.0, 500.0, 0.0) == 0.0
