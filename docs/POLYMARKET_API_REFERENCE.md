@@ -29,7 +29,7 @@ Full index: https://docs.polymarket.com/llms.txt
 | `user` | address | **Target wallet address** (0x-prefixed, 40 hex). |
 | `limit` | int | Default 100, max 10000. |
 | `offset` | int | Pagination. |
-| `takerOnly` | bool | Default true. |
+| `takerOnly` | bool | Optional. If set `true`, returns only taker fills. The bot now omits this filter so it can see both maker and taker fills. |
 | `side` | string | `BUY` or `SELL`. |
 | `market` | array | Condition IDs (optional filter). |
 | `eventId` | array | Event IDs (optional). Mutually exclusive with `market`. |

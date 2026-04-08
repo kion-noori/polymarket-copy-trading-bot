@@ -130,8 +130,9 @@ Full variable list: [Env reference](#env-reference-all-variables) in Setup below
 - **Latency** — polling is not instant; you may enter after the target.  
 - **Guards** — optional max trade age and price-vs-target checks can **skip** a mirror (still marked seen so the bot doesn’t retry forever).  
 - **Late entries** — the bot now checks a wider recent trade window by default (**500 trades** = `RECENT_TRADES_PAGE_SIZE=100` × `RECENT_TRADES_MAX_PAGES=5`) so it is less likely to buy something the target already exited.  
+- **Trade feed quirks** — the bot now fetches both maker and taker fills from the Data API. This is more complete than the previous taker-only behavior, but profile activity can still appear slightly differently than raw trade rows.  
 - **Liquidity** — market / FOK orders can fail if the book can’t fill at your limits. **Live:** failed orders are **not** marked seen at first — the bot **retries** each poll until the CLOB returns an `orderID`, or until **`MAX_LIVE_ORDER_ATTEMPTS`** is reached (then it marks seen and moves on). **CSV** rows are written only after a **successful** live order (or always in test mode).  
-- **SELL without prior BUY** — if you start late, mirroring a target **sell** may fail if you don’t hold that position.  
+- **SELL without prior BUY** — if you start late, mirroring a target **sell** may fail if you don’t hold that position. The bot now caps SELLs to your actually held shares and skips dust-sized leftovers instead of trying to post invalid microscopic exits.  
 - **Operational** — sleep mode, VPN drops, or API outages pause or skip cycles; retries exist but aren’t infinite.  
 - **Security** — running with a private key on a machine means **that machine is part of your threat model**.  
 
@@ -144,7 +145,7 @@ Full variable list: [Env reference](#env-reference-all-variables) in Setup below
 3. **Group** by asset for catch-up; apply skip / net rules where needed.  
 4. **Size** each mirror order: proportional to target vs your bankroll, then **cap** (% and optional $), then **floor** (min notional).  
 5. **Guard late entries** with a recent-trade window, max buy price, optional spread check, and optional `live_safe` startup behavior.  
-6. **Execute** via **py-clob-client** only (signed orders to the CLOB; no MetaMask popups).  
+6. **Execute** via **py-clob-client** only (signed orders to the CLOB; no MetaMask popups). BUY retries can widen by fixed price points on later attempts; SELLs cap to held shares before posting.  
 
 ---
 
@@ -167,7 +168,7 @@ pytest tests/ -q
 
 ```bash
 # Connect to VPS
-ssh root@YOUR_SERVER_IP
+ssh root@216.238.91.62
 
 # See live service logs
 journalctl -u polymarket-bot -f
@@ -319,7 +320,7 @@ chmod 600 .env
 | `MAX_BUY_PRICE` | Skip BUY mirrors when the live/current price is at or above this level (default `0.95`). Useful for avoiding near-resolved markets. |
 | `MAX_SPREAD_FRACTION` | Skip BUY mirrors when the bid/ask spread is wider than this fraction of the midpoint (default `0.12` = 12%). Set `0` to disable. |
 | `PRICE_GUARD_APPLY_TO_SELL` | If `true`, apply `MAX_PRICE_DEVIATION_VS_TARGET` to SELLs too (can skip exits). Default `false` = **follow their exit** even if the market dropped. |
-| `REQUIRE_CLOB_BALANCE_FOR_SELL` | Default `true`: for **single-trade** SELL mirrors, require enough **conditional** token balance on the CLOB vs sized sell; otherwise skip + mark seen. Set `false` to always attempt the sell (e.g. if balance API scaling misbehaves). |
+| `REQUIRE_CLOB_BALANCE_FOR_SELL` | Default `true`: for **single-trade** SELL mirrors, require enough **conditional** token balance on the CLOB vs sized sell; otherwise cap to held shares or skip + mark seen. Set `false` to always attempt the sell (e.g. if balance API scaling misbehaves). |
 | `SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN` | Default `true`: if target portfolio `/value` is 0, skip mirror (no blind sizing). Set `false` to restore old “use `MIN_NOTIONAL` anyway” behavior. |
 | `PRICE_GUARD_ENABLED` | Default `true`: can skip **BUYs** if mid moved up vs target fill. **SELLs** only if `PRICE_GUARD_APPLY_TO_SELL=true`. |
 | `MAX_PRICE_DEVIATION_VS_TARGET` | Max fraction worse than target’s price (default `0.08` = 8%). Set `0` to disable the check (no extra price API call). |
@@ -336,7 +337,7 @@ chmod 600 .env
 
 ## Sizing (plain English + formula)
 
-**Plain English:** We aim to put the same **share of your bankroll** into a trade as the target put of theirs, then **clamp** so no single trade is too large (percent of your bankroll, optional dollar cap). With `MIN_NOTIONAL_MODE=floor`, tiny amounts are **raised** to `MIN_NOTIONAL`; with `skip`, trades below that are **skipped**.
+**Plain English:** We aim to put the same **share of your bankroll** into a trade as the target put of theirs, then **clamp** so no single trade is too large (percent of your bankroll, optional dollar cap). BUYs use `MIN_NOTIONAL_MODE` (`floor` or `skip`). SELLs use a separate exit-sizing path and are **not** floored up to `MIN_NOTIONAL`.
 
 **Your bankroll** = **open position value** (public Data API) **+** **CLOB USDC cash** (so cash-only accounts still size correctly). **Target** sizing denominator uses public **position value** only.
 
@@ -350,6 +351,8 @@ if MAX_TRADE_USD > 0:
 my_notional  = max(capped, MIN_NOTIONAL)   # floor mode
 # skip mode: if capped < MIN_NOTIONAL → my_notional = 0 (skip)
 ```
+
+For SELLs, the bot uses the same proportional / cap math **without** the minimum-floor bump, then caps again to the conditional-token shares you actually hold.
 
 | Step | Effect |
 |------|--------|
@@ -366,8 +369,9 @@ my_notional  = max(capped, MIN_NOTIONAL)   # floor mode
 
 - The target’s trade tells us a **reference price** (what they paid or received).  
 - Your order is a **FOK market-style** order with a **worst acceptable price** (a limit). The CLOB fills you at the best available prices **up to** that limit.  
-- **`SLIPPAGE_FRACTION` (BUY)** — max you’ll pay **above** their price: limit = target × (1 + fraction), capped at **0.99**.
+- **`SLIPPAGE_FRACTION` (BUY)** — first attempt max you’ll pay **above** their price: limit = target × (1 + fraction), capped at **0.99**.
 - **`SELL_SLIPPAGE_FRACTION` (SELL)** — how low you’ll sell **below** their price: limit = max(**0.01**, target × (1 − fraction)). Default **0.99** means you accept selling down to **1¢** so you’re not stuck holding after they exit.
+- **BUY retries** — if a BUY FOK order cannot be fully filled immediately, later retries can widen the acceptable price by fixed points (`+0.02`, then `+0.04`, capped at `+0.05`) instead of percentage-of-price nudges.
 
 **Price guard:** For **BUYs**, we can still skip if the midpoint moved too far vs their fill. For **SELLs**, **`PRICE_GUARD_APPLY_TO_SELL`** defaults to **off** so we don’t skip their exit and leave you in the position.
 
@@ -466,12 +470,14 @@ For a stronger authenticated readiness check that derives the signer address fro
 
 - **State file:** `state/seen_trades.json` stores `seen_tx_hashes` and optional `order_failure_counts` for live retry / give-up (gitignored).  
 - **Target sells, you hold** → we attempt a proportional SELL so you exit together.  
+- **Manual partial profit-taking** → later bot SELLs are capped to what you actually still hold; tiny dust remainders are skipped and marked seen.  
 - **Market resolves** → Bot does not auto-redeem. If a market resolves and you are owed proceeds, you must still redeem/claim those winnings separately through Polymarket’s normal redemption flow.  
 - **FOK orders** → Fill completely or cancel; no partial fills by design.  
 - **API flakiness** → Retries on Data API and CLOB calls; main loop survives a bad cycle and continues polling.  
 - **Skipped mirrors** (price guard, age, sizing=0) → Transaction is still **marked seen** so the same fill isn’t retried every poll.  
 - **Live order failed** (no `orderID`) → **Retries** on later polls until success or **`MAX_LIVE_ORDER_ATTEMPTS`** (then marked seen; increase the limit or copy manually if you still want the trade).  
-- **SELL with no / insufficient CLOB shares** (single trade) → **Skipped** and marked seen when `REQUIRE_CLOB_BALANCE_FOR_SELL=true` and balance is readable; avoids infinite retries when you never had the position. If the balance call fails, we **still attempt** the sell and log a warning.  
+- **SELL with no / insufficient CLOB shares** (single trade) → when `REQUIRE_CLOB_BALANCE_FOR_SELL=true`, the bot now caps to held shares if possible; if nothing meaningful is left, it skips and marks seen. If the balance call fails, we **still attempt** the sell and log a warning.  
+- **SELL-only catch-up** → if the bot sees only target SELLs during catch-up and you still hold shares, it now attempts the exit instead of always skipping that batch.  
 
 ---
 

@@ -5,7 +5,7 @@ Short operational cheat sheet for the live VPS deployment.
 ## Connect
 
 ```bash
-ssh root@YOUR_SERVER_IP
+ssh root@216.238.91.62
 ```
 
 ## Service Commands
@@ -39,7 +39,7 @@ cd /root/polymarket-copy-trading-bot
 ## Environment / Readiness Checks
 
 ```bash
-python scripts/check_env.py
+python3 scripts/check_env.py
 .venv/bin/python scripts/check_live_ready.py
 ```
 
@@ -65,6 +65,9 @@ systemctl restart polymarket-bot
 - `me=$...` in logs is the bot/operator bankroll snapshot.
 - `target=$...` in logs is the copied wallet's portfolio value used for sizing.
 - `Skip SELL mirror (no CLOB position)` is expected when the target exits a market you never entered.
+- `Cap SELL mirror to held shares` means the target sold more than your remaining position size, so the bot trimmed the exit to what you actually still held.
+- `Skip SELL mirror (dust remainder)` means the bot found only a tiny leftover position after manual or partial exits and intentionally skipped posting an invalid microscopic order.
+- `place_market_order attempt ... failed at price ...` on BUYs means the bot is retrying with a looser price cap because the first immediate-fill order could not be fully filled.
 - If the laptop sleeps or disconnects, the `journalctl` stream stops locally, but the bot should continue running under `systemd`.
 
 ## Live Safety Reminders

@@ -36,11 +36,17 @@ This file is a lightweight snapshot of the current known-good deployment setup s
 - `MAX_BUY_PRICE=0.95`
 - `MAX_SPREAD_FRACTION=0.12`
 - `SIGNATURE_TYPE=2`
+- BUY retry logic now widens by absolute price points on retries (`+0.02`, then `+0.04`, capped at `+0.05`) instead of percentage-of-price bumps.
+- SELL sizing uses a dedicated exit path without the buy-side `MIN_NOTIONAL` floor.
+- SELL orders are capped to actually held conditional-token shares before placement.
+- Dust SELL remainders are skipped instead of posting invalid microscopic exits.
+- Trade fetches include both maker and taker fills (the previous `takerOnly=true` filter was removed).
 
 ## Important Notes
 
 - The signer EOA and `FUNDER_ADDRESS` can be different when `SIGNATURE_TYPE=2`; that is expected.
 - The bot is designed to skip SELLs when there is no matching held conditional-token balance.
+- SELL-only catch-up batches now attempt an exit when held shares exist, instead of always being discarded.
 - The bot does not auto-redeem resolved markets.
 - The live server uses a root-based systemd service example, which is reflected in `deploy/polymarket-bot.service.example`.
 
