@@ -8,6 +8,20 @@ This README is written for **both product and engineering** readers: high-level 
 
 ---
 
+## Read This First
+
+- **What it is:** a Python bot that watches one Polymarket wallet and mirrors its BUY / SELL activity on your own account.
+- **Who it is for:** a single operator running one bot for one target wallet.
+- **What it is not:** not a general trading platform, not multi-user SaaS, and not an auto-redeemer for resolved markets.
+- **How to read this repo:**
+  - Use this README for product overview, setup, runtime knobs, and operational basics.
+  - Use [docs/DEPLOYMENT_NOTES.md](docs/DEPLOYMENT_NOTES.md) for the current live deployment snapshot.
+  - Use [docs/OPS_NOTES.md](docs/OPS_NOTES.md) for day-to-day commands.
+  - Use [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md) for architectural decisions.
+  - Use [docs/POLYMARKET_API_REFERENCE.md](docs/POLYMARKET_API_REFERENCE.md) for API-specific notes.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -24,7 +38,7 @@ python scripts/check_env.py
 python main.py
 ```
 
-For production:
+For production, the short version is:
 
 - use a VPS in a region that returns `"blocked": false` from `https://polymarket.com/api/geoblock`
 - run under `systemd`
@@ -40,8 +54,7 @@ For production:
 - It does **not** guarantee fills.
 - It does **not** short markets or sell positions you do not hold.
 - It does **not** perfectly reconstruct all historical target intent after long downtime.
-- It does **not** auto-redeem resolved markets.
-  That means: if a Polymarket market resolves and your account is entitled to winnings, this bot will **not** automatically claim/redeem those proceeds for you. You still need to redeem through Polymarket’s normal flow or whatever manual process you use.
+- It does **not** auto-redeem resolved markets. If a market resolves and your account is owed winnings, you still need to redeem manually through Polymarket’s normal flow.
 
 ---
 
@@ -54,6 +67,19 @@ For production:
 | **Primary user** | You (single account); one **target** wallet to copy. |
 | **Stack** | Python 3.9+, Polymarket **Data API** (read) + **CLOB** via `py-clob-client` (trade). |
 | **Safety** | Test mode (no real orders), % and optional $ caps per trade, min trade floor, credentials only in `.env`. |
+
+---
+
+## Reader Guide
+
+| If you want to understand... | Start here |
+|--|--|
+| What the bot does and does not do | [Product overview](#product-overview) and [What this bot does not do](#what-this-bot-does-not-do) |
+| How to get it running locally | [Quick Start](#quick-start) and [Requirements & setup](#requirements--setup) |
+| How to run it safely on a VPS | [Run on a VPS (24×7)](#run-on-a-vps-247) and [docs/DEPLOYMENT_NOTES.md](docs/DEPLOYMENT_NOTES.md) |
+| What knobs actually matter in live trading | [What you can configure (“knobs”)](#what-you-can-configure-knobs) |
+| How sizing / slippage / catch-up work | [Sizing](#sizing-plain-english--formula), [Slippage](#slippage-plain-english), and [State & edge cases](#state--edge-cases) |
+| How to inspect a running bot | [Observability](#observability-logs--exports) and [docs/OPS_NOTES.md](docs/OPS_NOTES.md) |
 
 ---
 
@@ -78,6 +104,8 @@ For production:
 ## Product overview
 
 **Job to be done:** *“When trader X opens or changes a position on Polymarket, I want my account to reflect that decision at a scale appropriate to my bankroll—without babysitting the UI.”*
+
+**In one sentence:** the bot reads one target wallet’s recent fills, applies safety and sizing rules, and then posts matching orders on your account.
 
 **Core behaviors:**
 
@@ -140,6 +168,8 @@ Full variable list: [Env reference](#env-reference-all-variables) in Setup below
 
 ## How it works (system summary)
 
+**High-level pipeline:**
+
 1. **Poll** Data API for the target’s recent trades.  
 2. **Filter** to trades we haven’t seen; normalize side (BUY/SELL), outcome (YES/NO), size, price.  
 3. **Group** by asset for catch-up; apply skip / net rules where needed.  
@@ -185,6 +215,12 @@ systemctl restart polymarket-bot
 # Stop / start
 systemctl stop polymarket-bot
 systemctl start polymarket-bot
+```
+
+If you want a cleaner live log view with less polling noise:
+
+```bash
+journalctl -u polymarket-bot -f | grep -E "Trade:|Order placed|Skip |Catch-up|ERROR|WARNING|Portfolio:"
 ```
 
 ---
