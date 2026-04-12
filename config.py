@@ -38,9 +38,9 @@ POLY_API_PASSPHRASE = os.getenv("POLY_API_PASSPHRASE", "").strip()
 
 # Polling
 try:
-    POLL_INTERVAL_SEC = max(10, int(os.getenv("POLL_INTERVAL_SEC", "45")))
+    POLL_INTERVAL_SEC = max(10, int(os.getenv("POLL_INTERVAL_SEC", "15")))
 except (TypeError, ValueError):
-    POLL_INTERVAL_SEC = 45
+    POLL_INTERVAL_SEC = 15
 try:
     RECENT_TRADES_PAGE_SIZE = max(10, int(os.getenv("RECENT_TRADES_PAGE_SIZE", "100")))
 except (TypeError, ValueError):
@@ -72,7 +72,7 @@ MAX_TRADE_USD = _float_env("MAX_TRADE_USD", 0)  # 0 = no absolute cap, only % ca
 SLIPPAGE_FRACTION = _float_env("SLIPPAGE_FRACTION", 0.02)
 # SELL: default very wide so we follow target exits even if market dropped (floor 0.01).
 SELL_SLIPPAGE_FRACTION = _float_env("SELL_SLIPPAGE_FRACTION", 0.99)
-MAX_BUY_PRICE = _float_env("MAX_BUY_PRICE", 0.95)
+MAX_BUY_PRICE = _float_env("MAX_BUY_PRICE", 0.97)
 MAX_SPREAD_FRACTION = _float_env("MAX_SPREAD_FRACTION", 0.12)
 
 # Live CLOB: after this many failed posts (no orderID) for the same tx(es), mark seen and stop retrying. 0 = unlimited.

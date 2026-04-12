@@ -24,7 +24,7 @@ This file is a lightweight snapshot of the current known-good deployment setup s
 
 ## Current Strategy / Runtime Choices
 
-- `POLL_INTERVAL_SEC=45`
+- `POLL_INTERVAL_SEC=15`
 - `MAX_TRADE_AGE_SEC=0`
   This disables the pure age-based skip and relies on the other entry guards instead.
 - `MAX_PCT_PER_TRADE=0.10`
@@ -33,7 +33,7 @@ This file is a lightweight snapshot of the current known-good deployment setup s
 - `STARTUP_MODE=resume`
 - `RECENT_TRADES_PAGE_SIZE=100`
 - `RECENT_TRADES_MAX_PAGES=5`
-- `MAX_BUY_PRICE=0.95`
+- `MAX_BUY_PRICE=0.97`
 - `MAX_SPREAD_FRACTION=0.12`
 - `SIGNATURE_TYPE=2`
 - BUY retry logic now widens by absolute price points on retries (`+0.02`, then `+0.04`, capped at `+0.05`) instead of percentage-of-price bumps.

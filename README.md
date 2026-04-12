@@ -104,7 +104,7 @@ For production:
 
 | Area | What it does |
 |------|----------------|
-| **Poll interval** | How often we check for new target trades (`POLL_INTERVAL_SEC`, default 45s). |
+| **Poll interval** | How often we check for new target trades (`POLL_INTERVAL_SEC`, default 15s). |
 | **Risk per trade** | Max **% of your bankroll** per trade (`MAX_PCT_PER_TRADE`); optional **hard $ cap** (`MAX_TRADE_USD`). |
 | **Smallest copy** | `MIN_NOTIONAL` + `MIN_NOTIONAL_MODE` (`floor` = bump tiny sizes up; `skip` = skip dust trades). |
 | **Late / worse fills** | `PRICE_GUARD_ENABLED` + `MAX_PRICE_DEVIATION_VS_TARGET` (skip if CLOB mid moved too far vs target’s fill). |
@@ -306,7 +306,7 @@ chmod 600 .env
 | `FUNDER_ADDRESS` | **Your** Polymarket profile address from [settings](https://polymarket.com/settings) (often differs from your Phantom/MetaMask EOA). |
 | `PRIVATE_KEY` | Private key for the wallet that **signs** for Polymarket (usually your EOA; `SIGNATURE_TYPE=2` ties it to the funder). |
 | `POLY_API_KEY`, `POLY_API_SECRET`, `POLY_API_PASSPHRASE` | L2 API credentials from the step above. |
-| `POLL_INTERVAL_SEC` | Seconds between polls (default 45). |
+| `POLL_INTERVAL_SEC` | Seconds between polls (default 15). |
 | `RECENT_TRADES_PAGE_SIZE` | Trades fetched per Data API page when building the recent decision window (default `100`). |
 | `RECENT_TRADES_MAX_PAGES` | Number of recent Data API pages to inspect for catch-up / late-entry logic (default `5` = about 500 recent trades). |
 | `STARTUP_MODE` | `resume` (default) = normal catch-up behavior on boot; `live_safe` = mark all currently visible trades seen on startup and only mirror trades that appear afterward. |
@@ -317,7 +317,7 @@ chmod 600 .env
 | `MAX_TRADE_USD` | Optional absolute max $ per trade (`0` = use only % cap). |
 | `SLIPPAGE_FRACTION` | **BUY** only: max pay above target fill (default `0.02` = 2%). Range `(0, 0.5)`. |
 | `SELL_SLIPPAGE_FRACTION` | **SELL** only: how far below target’s sell price you allow (default `0.99` → floor **0.01**, i.e. take best bid down to a penny). Range `(0, 1]`. |
-| `MAX_BUY_PRICE` | Skip BUY mirrors when the live/current price is at or above this level (default `0.95`). Useful for avoiding near-resolved markets. |
+| `MAX_BUY_PRICE` | Skip BUY mirrors when the live/current price is at or above this level (default `0.97`). Useful for avoiding near-resolved markets. |
 | `MAX_SPREAD_FRACTION` | Skip BUY mirrors when the bid/ask spread is wider than this fraction of the midpoint (default `0.12` = 12%). Set `0` to disable. |
 | `PRICE_GUARD_APPLY_TO_SELL` | If `true`, apply `MAX_PRICE_DEVIATION_VS_TARGET` to SELLs too (can skip exits). Default `false` = **follow their exit** even if the market dropped. |
 | `REQUIRE_CLOB_BALANCE_FOR_SELL` | Default `true`: for **single-trade** SELL mirrors, require enough **conditional** token balance on the CLOB vs sized sell; otherwise cap to held shares or skip + mark seen. Set `false` to always attempt the sell (e.g. if balance API scaling misbehaves). |
@@ -375,7 +375,7 @@ For SELLs, the bot uses the same proportional / cap math **without** the minimum
 
 **Price guard:** For **BUYs**, we can still skip if the midpoint moved too far vs their fill. For **SELLs**, **`PRICE_GUARD_APPLY_TO_SELL`** defaults to **off** so we don’t skip their exit and leave you in the position.
 
-**Late-entry guard:** Even if the target has not sold yet, buying at **0.95+** usually means you are paying for a trade whose edge may already be mostly gone. `MAX_BUY_PRICE` gives you a simple brake for that scenario, while the recent-trade window helps detect cases where they already bought and sold before you saw it.
+**Late-entry guard:** Even if the target has not sold yet, buying at **0.97+** usually means you are paying for a trade whose edge may already be mostly gone. `MAX_BUY_PRICE` gives you a simple brake for that scenario, while the recent-trade window helps detect cases where they already bought and sold before you saw it.
 
 Examples: target bought at **0.50**, `SLIPPAGE_FRACTION=0.02` → your BUY limit **0.51**. Target sold at **0.50**, default sell settings → your SELL floor **0.01** (aggressive exit).
 
