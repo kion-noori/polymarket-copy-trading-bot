@@ -151,7 +151,7 @@ def test_run_once_single_sell_dust_remainder_marks_seen_and_skips_order(main_mod
     assert st.is_already_seen("0xsell-dust") is True
 
 
-def test_run_once_failed_live_order_retries_then_abandons(main_mod, monkeypatch):
+def test_run_once_failed_live_order_retries_then_uses_partial_fallback(main_mod, monkeypatch):
     main, st = main_mod
     trade = {
         "transactionHash": "0xfail-buy",
@@ -171,7 +171,15 @@ def test_run_once_failed_live_order_retries_then_abandons(main_mod, monkeypatch)
         lambda user: 1000.0 if user == main.FUNDER_ADDRESS else 2000.0,
     )
     monkeypatch.setattr(main, "get_collateral_balance_usdc", lambda: 0.0)
-    monkeypatch.setattr(main, "place_market_order", lambda **kwargs: None)
+    calls: list[float] = []
+
+    def fake_place_market_order(**kwargs):
+        calls.append(kwargs["notional_usd"])
+        if len(calls) < 3:
+            return None
+        return {"orderID": "partial-ok", "status": "matched"}
+
+    monkeypatch.setattr(main, "place_market_order", fake_place_market_order)
 
     main.run_once()
     assert st.is_already_seen("0xfail-buy") is False
@@ -181,9 +189,39 @@ def test_run_once_failed_live_order_retries_then_abandons(main_mod, monkeypatch)
 
     main.run_once()
     assert st.is_already_seen("0xfail-buy") is True
+    assert calls == [5.0, 5.0, 2.5]
 
     second = json.loads(open(st.STATE_FILE, encoding="utf-8").read())
     assert "0xfail-buy" not in (second.get("order_failure_counts") or {})
+
+
+def test_run_once_failed_live_order_fallback_failure_still_abandons(main_mod, monkeypatch):
+    main, st = main_mod
+    trade = {
+        "transactionHash": "0xfail-buy-hard",
+        "side": "BUY",
+        "size": 20,
+        "price": 0.5,
+        "asset": "asset-hard",
+        "conditionId": "cond-hard",
+        "timestamp": 100,
+        "title": "Market Hard",
+    }
+
+    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [trade] if offset == 0 else [])
+    monkeypatch.setattr(
+        main,
+        "get_portfolio_value",
+        lambda user: 1000.0 if user == main.FUNDER_ADDRESS else 2000.0,
+    )
+    monkeypatch.setattr(main, "get_collateral_balance_usdc", lambda: 0.0)
+    monkeypatch.setattr(main, "place_market_order", lambda **kwargs: None)
+
+    main.run_once()
+    assert st.is_already_seen("0xfail-buy-hard") is False
+
+    main.run_once()
+    assert st.is_already_seen("0xfail-buy-hard") is True
 
 
 def test_run_once_skips_buy_above_max_buy_price(main_mod, monkeypatch):

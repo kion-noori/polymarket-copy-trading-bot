@@ -94,6 +94,10 @@ def _bool_env(name: str, default: bool) -> bool:
         return default
     return v in ("1", "true", "yes", "on")
 
+PARTIAL_FALLBACK_ENABLED = _bool_env("PARTIAL_FALLBACK_ENABLED", True)
+PARTIAL_FALLBACK_FRACTION = _float_env("PARTIAL_FALLBACK_FRACTION", 0.5)
+PARTIAL_FALLBACK_MIN_NOTIONAL = _float_env("PARTIAL_FALLBACK_MIN_NOTIONAL", 1.0)
+
 SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN = _bool_env("SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN", True)
 
 # Price guard: extra CLOB midpoint vs target's fill; skip if market moved too much against you.
@@ -174,6 +178,10 @@ def validate_config() -> list[str]:
         errors.append("MAX_BUY_PRICE should be in (0, 0.99]")
     if not (0 <= MAX_SPREAD_FRACTION <= 1.0):
         errors.append("MAX_SPREAD_FRACTION should be in [0, 1]")
+    if not (0 < PARTIAL_FALLBACK_FRACTION < 1):
+        errors.append("PARTIAL_FALLBACK_FRACTION should be in (0, 1)")
+    if PARTIAL_FALLBACK_MIN_NOTIONAL < 0:
+        errors.append("PARTIAL_FALLBACK_MIN_NOTIONAL must be >= 0")
     if _MIN_NOTIONAL_MODE_RAW not in ("", "floor", "skip"):
         errors.append("MIN_NOTIONAL_MODE must be 'floor' or 'skip'")
     if STARTUP_MODE not in ("resume", "live_safe"):

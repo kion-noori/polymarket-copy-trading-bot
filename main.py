@@ -18,6 +18,9 @@ from config import (
     MAX_SPREAD_FRACTION,
     MAX_TRADE_AGE_SEC,
     POLL_INTERVAL_SEC,
+    PARTIAL_FALLBACK_ENABLED,
+    PARTIAL_FALLBACK_FRACTION,
+    PARTIAL_FALLBACK_MIN_NOTIONAL,
     PRICE_GUARD_APPLY_TO_SELL,
     PRICE_GUARD_ENABLED,
     RECENT_TRADES_MAX_PAGES,
@@ -272,6 +275,49 @@ def _place_one(
         return True
     logger.error("Order failed or no orderID: %s — will retry same trade on next poll (not marked seen)", resp)
     return False
+
+
+def _fallback_partial_notional(my_notional: float) -> float:
+    """Return a smaller BUY notional for the last-chance rescue attempt."""
+    if not PARTIAL_FALLBACK_ENABLED or my_notional <= 0:
+        return 0.0
+    rescue = my_notional * PARTIAL_FALLBACK_FRACTION
+    rescue = max(PARTIAL_FALLBACK_MIN_NOTIONAL, rescue)
+    # Keep this strictly smaller than the original size so it is a true fallback.
+    if rescue >= my_notional:
+        return 0.0
+    return rescue
+
+
+def _try_partial_fallback_buy(
+    asset: str,
+    condition_id: str,
+    my_notional: float,
+    worst_price: float,
+    title: str,
+    outcome: str,
+    context_label: str,
+) -> bool:
+    rescue_notional = _fallback_partial_notional(my_notional)
+    if rescue_notional <= 0:
+        return False
+    logger.warning(
+        "%s full-size BUY failed after %s attempts; trying smaller fallback order: $%.2f -> $%.2f | %s",
+        context_label,
+        MAX_LIVE_ORDER_ATTEMPTS,
+        my_notional,
+        rescue_notional,
+        ((title or "").strip() or "Unknown market")[:80],
+    )
+    return _place_one(
+        asset,
+        condition_id,
+        "BUY",
+        rescue_notional,
+        worst_price,
+        title,
+        outcome=outcome,
+    )
 
 
 def _pre_trade_allows(
@@ -532,16 +578,27 @@ def run_once() -> None:
             elif MAX_LIVE_ORDER_ATTEMPTS > 0 and note_live_order_failure(
                 [tx_hash], MAX_LIVE_ORDER_ATTEMPTS
             ):
-                logger.warning(
-                    "Giving up after %s failed live orders for tx %s...; marking seen (copy manually if needed)",
-                    MAX_LIVE_ORDER_ATTEMPTS,
-                    (tx_hash or "")[:18],
-                )
-                send_alert(
-                    "live_order_give_up",
-                    f"Giving up after {MAX_LIVE_ORDER_ATTEMPTS} failed live orders for tx {(tx_hash or '')[:18]}...",
-                )
-                mark_seen(tx_hash)
+                if side == "BUY" and _try_partial_fallback_buy(
+                    asset,
+                    condition_id,
+                    my_notional,
+                    worst_price,
+                    trade.get("title", ""),
+                    _normalize_outcome(trade),
+                    "Single-trade",
+                ):
+                    mark_seen(tx_hash)
+                else:
+                    logger.warning(
+                        "Giving up after %s failed live orders for tx %s...; marking seen (copy manually if needed)",
+                        MAX_LIVE_ORDER_ATTEMPTS,
+                        (tx_hash or "")[:18],
+                    )
+                    send_alert(
+                        "live_order_give_up",
+                        f"Giving up after {MAX_LIVE_ORDER_ATTEMPTS} failed live orders for tx {(tx_hash or '')[:18]}...",
+                    )
+                    mark_seen(tx_hash)
             continue
 
         # Multiple trades for same asset (catching up)
@@ -612,16 +669,27 @@ def run_once() -> None:
             elif MAX_LIVE_ORDER_ATTEMPTS > 0 and note_live_order_failure(
                 group_hashes, MAX_LIVE_ORDER_ATTEMPTS
             ):
-                logger.warning(
-                    "Giving up catch-up after %s failed live orders; marking %s tx(es) seen",
-                    MAX_LIVE_ORDER_ATTEMPTS,
-                    len(group_hashes),
-                )
-                send_alert(
-                    "catchup_order_give_up",
-                    f"Giving up catch-up after {MAX_LIVE_ORDER_ATTEMPTS} failed live orders; marking {len(group_hashes)} tx(es) seen.",
-                )
-                mark_seen_batch(group_hashes)
+                if _try_partial_fallback_buy(
+                    asset,
+                    condition_id,
+                    my_notional,
+                    worst_price,
+                    last_trade.get("title", ""),
+                    _normalize_outcome(last_trade),
+                    "Catch-up",
+                ):
+                    mark_seen_batch(group_hashes)
+                else:
+                    logger.warning(
+                        "Giving up catch-up after %s failed live orders; marking %s tx(es) seen",
+                        MAX_LIVE_ORDER_ATTEMPTS,
+                        len(group_hashes),
+                    )
+                    send_alert(
+                        "catchup_order_give_up",
+                        f"Giving up catch-up after {MAX_LIVE_ORDER_ATTEMPTS} failed live orders; marking {len(group_hashes)} tx(es) seen.",
+                    )
+                    mark_seen_batch(group_hashes)
             continue
 
         # Only SELLs: if we hold shares, try to mirror the exit; otherwise skip.
