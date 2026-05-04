@@ -7,8 +7,8 @@ import time
 from typing import Any
 
 try:
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import (
+    from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import (
         ApiCreds,
         AssetType,
         BalanceAllowanceParams,
@@ -16,17 +16,33 @@ try:
         OrderType,
         PartialCreateOrderOptions,
     )
-    from py_clob_client.order_builder.constants import BUY, SELL
+    from py_clob_client_v2.order_builder.constants import BUY, SELL
+    USING_CLOB_V2 = True
 except ImportError:
-    ClobClient = None
-    ApiCreds = None
-    AssetType = None
-    BalanceAllowanceParams = None
-    MarketOrderArgs = None
-    OrderType = None
-    PartialCreateOrderOptions = None
-    BUY = "BUY"
-    SELL = "SELL"
+    try:
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import (
+            ApiCreds,
+            AssetType,
+            BalanceAllowanceParams,
+            MarketOrderArgs,
+            OrderType,
+            PartialCreateOrderOptions,
+        )
+        from py_clob_client.order_builder.constants import BUY, SELL
+
+        USING_CLOB_V2 = False
+    except ImportError:
+        ClobClient = None
+        ApiCreds = None
+        AssetType = None
+        BalanceAllowanceParams = None
+        MarketOrderArgs = None
+        OrderType = None
+        PartialCreateOrderOptions = None
+        BUY = "BUY"
+        SELL = "SELL"
+        USING_CLOB_V2 = False
 
 from config import (
     CHAIN_ID,
@@ -53,7 +69,7 @@ _client: ClobClient | None = None
 def _require_client_lib() -> None:
     if ClobClient is None:
         raise RuntimeError(
-            "py-clob-client is not installed. Install requirements.txt before live trading."
+            "No Polymarket CLOB client is installed. Install requirements.txt before live trading."
         )
 
 
@@ -75,6 +91,12 @@ def get_client() -> ClobClient:
             signature_type=SIGNATURE_TYPE,
             funder=FUNDER_ADDRESS,
         )
+        if USING_CLOB_V2:
+            logger.info("Using Polymarket CLOB V2 client for live trading")
+        else:
+            logger.warning(
+                "Using legacy Polymarket CLOB client. Live trading may fail after the April 28, 2026 V2 migration."
+            )
     return _client
 
 
@@ -236,8 +258,15 @@ def place_market_order(
                 price=attempt_price,
                 order_type=OrderType.FOK,
             )
-            signed = client.create_market_order(order_args, options=options)
-            resp = client.post_order(signed, OrderType.FOK)
+            if USING_CLOB_V2 and hasattr(client, "create_and_post_market_order"):
+                resp = client.create_and_post_market_order(
+                    order_args=order_args,
+                    options=options,
+                    order_type=OrderType.FOK,
+                )
+            else:
+                signed = client.create_market_order(order_args, options=options)
+                resp = client.post_order(signed, OrderType.FOK)
             if isinstance(resp, dict):
                 return resp
             return {"orderID": getattr(resp, "orderID", ""), "status": getattr(resp, "status", "unknown")}

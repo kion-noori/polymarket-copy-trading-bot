@@ -29,6 +29,24 @@ class FakeClient:
         return {"orderID": "abc", "status": "matched"}
 
 
+class FakeV2Client:
+    def __init__(self):
+        self.calls = []
+
+    def create_and_post_market_order(self, order_args, options=None, order_type=None):
+        self.calls.append(
+            {
+                "token_id": order_args.token_id,
+                "amount": order_args.amount,
+                "side": order_args.side,
+                "price": order_args.price,
+                "order_type": order_args.order_type,
+                "post_order_type": order_type,
+            }
+        )
+        return {"orderID": "v2", "status": "matched"}
+
+
 def test_buy_retries_widen_price(monkeypatch):
     fake_client = FakeClient(failures_before_success=2)
     monkeypatch.setattr(executor, "_require_client_lib", lambda: None)
@@ -61,3 +79,29 @@ def test_sell_retry_keeps_same_price(monkeypatch):
 
     assert resp == {"orderID": "abc", "status": "matched"}
     assert fake_client.create_prices == [0.5, 0.5]
+
+
+def test_v2_client_path_uses_create_and_post(monkeypatch):
+    fake_client = FakeV2Client()
+    monkeypatch.setattr(executor, "_require_client_lib", lambda: None)
+    monkeypatch.setattr(executor, "get_market_options", lambda condition_id, token_id: None)
+    monkeypatch.setattr(executor, "get_client", lambda: fake_client)
+    monkeypatch.setattr(executor, "MarketOrderArgs", DummyMarketOrderArgs)
+    monkeypatch.setattr(executor, "OrderType", SimpleNamespace(FOK="FOK"))
+    monkeypatch.setattr(executor, "BUY", "BUY")
+    monkeypatch.setattr(executor, "SELL", "SELL")
+    monkeypatch.setattr(executor, "USING_CLOB_V2", True)
+
+    resp = executor.place_market_order("tok", "cond", "BUY", 5.0, 0.714)
+
+    assert resp == {"orderID": "v2", "status": "matched"}
+    assert fake_client.calls == [
+        {
+            "token_id": "tok",
+            "amount": 5.0,
+            "side": "BUY",
+            "price": 0.714,
+            "order_type": "FOK",
+            "post_order_type": "FOK",
+        }
+    ]
