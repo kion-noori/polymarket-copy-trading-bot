@@ -1,4 +1,4 @@
-"""Polymarket Data API client (public, no auth): trades and portfolio value."""
+"""Polymarket Data API client (public, no auth): trades, positions, and portfolio value."""
 
 import logging
 import time
@@ -44,6 +44,25 @@ def get_trades(user: str | None = None, limit: int = 100, offset: int = 0) -> li
         return []
     try:
         return r.json()
+    except ValueError:
+        return []
+
+
+def get_positions(user: str, size_threshold: float | None = None) -> list[dict[str, Any]]:
+    """Fetch current positions for a user. Returns [] on error."""
+    addr = (user or "").strip()
+    if not addr:
+        return []
+    url = f"{DATA_API_BASE}/positions"
+    params: dict[str, Any] = {"user": addr}
+    if size_threshold is not None:
+        params["sizeThreshold"] = size_threshold
+    r = _request_with_retry("GET", url, params=params, timeout=30)
+    if r is None:
+        return []
+    try:
+        data = r.json()
+        return data if isinstance(data, list) else []
     except ValueError:
         return []
 

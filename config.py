@@ -97,6 +97,9 @@ def _bool_env(name: str, default: bool) -> bool:
 PARTIAL_FALLBACK_ENABLED = _bool_env("PARTIAL_FALLBACK_ENABLED", True)
 PARTIAL_FALLBACK_FRACTION = _float_env("PARTIAL_FALLBACK_FRACTION", 0.5)
 PARTIAL_FALLBACK_MIN_NOTIONAL = _float_env("PARTIAL_FALLBACK_MIN_NOTIONAL", 1.0)
+RECONCILE_ON_START = _bool_env("RECONCILE_ON_START", False)
+RECONCILE_SELL_ONLY = _bool_env("RECONCILE_SELL_ONLY", True)
+RECONCILE_MIN_NOTIONAL = _float_env("RECONCILE_MIN_NOTIONAL", 1.0)
 
 SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN = _bool_env("SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN", True)
 
@@ -182,6 +185,8 @@ def validate_config() -> list[str]:
         errors.append("PARTIAL_FALLBACK_FRACTION should be in (0, 1)")
     if PARTIAL_FALLBACK_MIN_NOTIONAL < 0:
         errors.append("PARTIAL_FALLBACK_MIN_NOTIONAL must be >= 0")
+    if RECONCILE_MIN_NOTIONAL < 0:
+        errors.append("RECONCILE_MIN_NOTIONAL must be >= 0")
     if _MIN_NOTIONAL_MODE_RAW not in ("", "floor", "skip"):
         errors.append("MIN_NOTIONAL_MODE must be 'floor' or 'skip'")
     if STARTUP_MODE not in ("resume", "live_safe"):

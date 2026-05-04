@@ -23,6 +23,9 @@ from config import (
     PARTIAL_FALLBACK_MIN_NOTIONAL,
     PRICE_GUARD_APPLY_TO_SELL,
     PRICE_GUARD_ENABLED,
+    RECONCILE_MIN_NOTIONAL,
+    RECONCILE_ON_START,
+    RECONCILE_SELL_ONLY,
     RECENT_TRADES_MAX_PAGES,
     RECENT_TRADES_PAGE_SIZE,
     REQUIRE_CLOB_BALANCE_FOR_SELL,
@@ -34,7 +37,7 @@ from config import (
     TEST_MODE,
     validate_config,
 )
-from data_api import get_trades, get_portfolio_value
+from data_api import get_positions, get_portfolio_value, get_trades
 from executor import (
     get_bid_ask_prices,
     get_collateral_balance_usdc,
@@ -171,6 +174,7 @@ _theoretical_positions: dict[str, dict] = {}  # token_id -> {"shares": float, "e
 _poll_count = 0
 IDLE_LOG_EVERY_N_POLLS = 10
 _startup_window_initialized = False
+_startup_reconcile_done = False
 
 
 def _apply_theoretical_trade(asset: str, side: str, notional: float, price: float) -> None:
@@ -397,6 +401,134 @@ def _log_portfolio_line(
         logger.info("Portfolio: me=$%.2f%s | target=$%.2f", my_value, tail, target_value)
 
 
+def _maybe_reconcile_positions_on_start(my_value: float, target_value: float) -> None:
+    """One-time startup reconciliation to sell excess holdings versus the target's current book."""
+    global _startup_reconcile_done
+    if _startup_reconcile_done or not RECONCILE_ON_START or TEST_MODE:
+        _startup_reconcile_done = True
+        return
+    _startup_reconcile_done = True
+    if not RECONCILE_SELL_ONLY:
+        logger.warning("Startup reconcile is enabled, but buy-side reconciliation is not implemented; skipping")
+        return
+    if my_value <= 0 or target_value <= 0:
+        logger.warning(
+            "Startup reconcile skipped: invalid sizing inputs (my_value=$%.2f, target_value=$%.2f)",
+            my_value,
+            target_value,
+        )
+        return
+    target_positions = get_positions(TARGET_WALLET)
+    my_positions = get_positions(FUNDER_ADDRESS)
+    if not my_positions:
+        logger.info("Startup reconcile: no current positions to compare")
+        return
+    if not target_positions:
+        logger.warning("Startup reconcile: target positions unavailable; not flattening blindly")
+        return
+
+    target_by_asset: dict[str, dict] = {}
+    for pos in target_positions:
+        asset = pos.get("asset")
+        if asset:
+            target_by_asset[asset] = pos
+
+    ratio = my_value / target_value if target_value > 0 else 0.0
+    reconcile_count = 0
+
+    for pos in my_positions:
+        asset = pos.get("asset")
+        condition_id = pos.get("conditionId") or pos.get("condition_id")
+        title = pos.get("title", "")
+        outcome = _normalize_outcome(pos)
+        if not asset or not condition_id:
+            continue
+        try:
+            my_size = float(pos.get("size", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if my_size <= SELL_SHARES_EPSILON:
+            continue
+
+        target_pos = target_by_asset.get(asset)
+        try:
+            target_size = float(target_pos.get("size", 0) or 0) if target_pos else 0.0
+        except (TypeError, ValueError):
+            target_size = 0.0
+        desired_shares = max(0.0, target_size * ratio)
+        excess_shares = my_size - desired_shares
+        if excess_shares <= SELL_SHARES_EPSILON:
+            continue
+
+        cur_price = pos.get("curPrice")
+        try:
+            price = float(cur_price) if cur_price is not None else 0.0
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 0:
+            current = get_current_price(asset)
+            price = current if current is not None else 0.0
+        if price <= 0:
+            logger.warning("Startup reconcile: no usable price for %s; skipping", asset[:16])
+            continue
+
+        excess_market_value = excess_shares * price
+        if excess_market_value < RECONCILE_MIN_NOTIONAL:
+            logger.info(
+                "Startup reconcile: skip dust excess $%.4f / %.6f shares | %s",
+                excess_market_value,
+                excess_shares,
+                (title or "Unknown")[:60],
+            )
+            continue
+
+        worst_price = max(0.01, price * (1 - SELL_SLIPPAGE_FRACTION))
+        order_notional = excess_shares * worst_price
+        skip_sell, have_shares, need_shares, sell_notional = _skip_sell_insufficient_shares(
+            asset, order_notional, worst_price
+        )
+        if skip_sell:
+            logger.info(
+                "Startup reconcile: skip %s (no CLOB shares: have %.6f, need %.6f)",
+                asset[:16],
+                have_shares if have_shares is not None else 0.0,
+                need_shares,
+            )
+            continue
+        if sell_notional <= 0:
+            continue
+        if _is_dust_sell(sell_notional, worst_price):
+            logger.info(
+                "Startup reconcile: skip SELL dust remainder: $%.4f / %.6f shares | %s",
+                sell_notional,
+                sell_notional / worst_price if worst_price > 0 else 0.0,
+                (title or "Unknown")[:60],
+            )
+            continue
+
+        logger.info(
+            "Startup reconcile: SELL excess %.6f shares (market value ~$%.2f, order notional $%.2f) | desired %.6f, have %.6f | %s",
+            sell_notional / worst_price if worst_price > 0 else 0.0,
+            excess_market_value,
+            sell_notional,
+            desired_shares,
+            my_size,
+            (title or "Unknown")[:60],
+        )
+        if _place_one(
+            asset,
+            condition_id,
+            "SELL",
+            sell_notional,
+            worst_price,
+            title,
+            outcome=outcome,
+        ):
+            reconcile_count += 1
+
+    logger.info("Startup reconcile complete: %s sell order(s) submitted", reconcile_count)
+
+
 def run_once() -> None:
     """Poll target trades, mirror any new ones with proportional sizing."""
     global _poll_count, _startup_window_initialized
@@ -416,16 +548,18 @@ def run_once() -> None:
         if _poll_count == 1:
             logger.info("Test mode: using placeholder portfolio value $500 (actual value 0 or unknown)")
 
+    if my_value <= 0 and not TEST_MODE:
+        logger.warning("My portfolio value is 0 or unknown; skipping execution")
+        return
+
+    _maybe_reconcile_positions_on_start(my_value, target_value)
+
     if not trades:
         # No trades at all: log balance only every N-th poll to avoid log spam
         if _poll_count % IDLE_LOG_EVERY_N_POLLS == 1:
             _log_portfolio_line(my_value, target_value, raw_bankroll, position_value, cash_usdc, " (no new trades)")
             if TEST_MODE:
                 _log_theoretical_pnl()
-        return
-
-    if my_value <= 0 and not TEST_MODE:
-        logger.warning("My portfolio value is 0 or unknown; skipping execution")
         return
 
     # Collect unseen trades and group by asset (same market/token)

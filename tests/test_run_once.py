@@ -117,6 +117,67 @@ def test_run_once_single_sell_without_position_marks_seen_and_skips_order(main_m
     assert st.is_already_seen("0xsell-only") is True
 
 
+def test_run_once_startup_reconcile_sells_excess_position(main_mod, monkeypatch):
+    main, st = main_mod
+    monkeypatch.setattr(main, "RECONCILE_ON_START", True)
+    monkeypatch.setattr(main, "RECONCILE_SELL_ONLY", True)
+    monkeypatch.setattr(main, "RECONCILE_MIN_NOTIONAL", 1.0)
+    monkeypatch.setattr(main, "TARGET_WALLET", "target-wallet")
+    monkeypatch.setattr(main, "FUNDER_ADDRESS", "my-wallet")
+
+    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [])
+    monkeypatch.setattr(
+        main,
+        "get_portfolio_value",
+        lambda user: 100.0,
+    )
+    monkeypatch.setattr(main, "get_collateral_balance_usdc", lambda: 0.0)
+    monkeypatch.setattr(
+        main,
+        "get_positions",
+        lambda user: (
+            [
+                {
+                    "asset": "asset-1",
+                    "conditionId": "cond-1",
+                    "size": 20.0,
+                    "curPrice": 0.5,
+                    "title": "Market one",
+                    "outcome": "YES",
+                }
+            ]
+            if user == "my-wallet"
+            else [
+                {
+                    "asset": "asset-1",
+                    "conditionId": "cond-1",
+                    "size": 5.0,
+                    "curPrice": 0.5,
+                    "title": "Market one",
+                    "outcome": "YES",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_skip_sell_insufficient_shares",
+        lambda asset, my_notional, worst_price: (False, 20.0, my_notional / worst_price, my_notional),
+    )
+
+    placed = []
+
+    def fake_place(asset, condition_id, side, my_notional, worst_price, title, outcome="?"):
+        placed.append((asset, side, round(my_notional, 2), round(worst_price, 3), title, outcome))
+        return True
+
+    monkeypatch.setattr(main, "_place_one", fake_place)
+
+    main.run_once()
+
+    assert placed == [("asset-1", "SELL", 0.15, 0.01, "Market one", "YES")]
+
+
 def test_run_once_single_sell_dust_remainder_marks_seen_and_skips_order(main_mod, monkeypatch):
     main, st = main_mod
     trade = {
