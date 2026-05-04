@@ -7,16 +7,18 @@ import time
 from typing import Any
 
 try:
-    from py_clob_client_v2.client import ClobClient
-    from py_clob_client_v2.clob_types import (
+    from py_clob_client_v2 import (
         ApiCreds,
+        ClobClient,
         AssetType,
         BalanceAllowanceParams,
         MarketOrderArgs,
         OrderType,
         PartialCreateOrderOptions,
+        Side,
     )
-    from py_clob_client_v2.order_builder.constants import BUY, SELL
+    BUY = Side.BUY
+    SELL = Side.SELL
     USING_CLOB_V2 = True
 except ImportError:
     try:
