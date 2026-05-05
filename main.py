@@ -244,6 +244,7 @@ def _place_one(
     worst_price: float,
     title: str,
     outcome: str = "?",
+    order_type: str = "FOK",
 ) -> bool:
     """
     Place a single order (or log in test mode).
@@ -272,6 +273,7 @@ def _place_one(
         side=side,
         notional_usd=my_notional,
         worst_price=worst_price,
+        order_type=order_type,
     )
     if resp and resp.get("orderID"):
         _append_trade_log(side, outcome, title or "", my_notional, worst_price, mode="live")
@@ -523,6 +525,7 @@ def _maybe_reconcile_positions_on_start(my_value: float, target_value: float) ->
             worst_price,
             title,
             outcome=outcome,
+            order_type="FAK",
         ):
             reconcile_count += 1
 

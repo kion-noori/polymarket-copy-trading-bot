@@ -105,3 +105,29 @@ def test_v2_client_path_uses_create_and_post(monkeypatch):
             "post_order_type": "FOK",
         }
     ]
+
+
+def test_v2_client_path_honors_custom_order_type(monkeypatch):
+    fake_client = FakeV2Client()
+    monkeypatch.setattr(executor, "_require_client_lib", lambda: None)
+    monkeypatch.setattr(executor, "get_market_options", lambda condition_id, token_id: None)
+    monkeypatch.setattr(executor, "get_client", lambda: fake_client)
+    monkeypatch.setattr(executor, "MarketOrderArgs", DummyMarketOrderArgs)
+    monkeypatch.setattr(executor, "OrderType", SimpleNamespace(FOK="FOK", FAK="FAK"))
+    monkeypatch.setattr(executor, "BUY", "BUY")
+    monkeypatch.setattr(executor, "SELL", "SELL")
+    monkeypatch.setattr(executor, "USING_CLOB_V2", True)
+
+    resp = executor.place_market_order("tok", "cond", "SELL", 2.5, 0.25, order_type="FAK")
+
+    assert resp == {"orderID": "v2", "status": "matched"}
+    assert fake_client.calls == [
+        {
+            "token_id": "tok",
+            "amount": 10.0,
+            "side": "SELL",
+            "price": 0.25,
+            "order_type": "FAK",
+            "post_order_type": "FAK",
+        }
+    ]

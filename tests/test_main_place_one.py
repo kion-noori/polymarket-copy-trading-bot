@@ -68,3 +68,10 @@ def test_place_one_test_mode_returns_true_without_order(main_mod, monkeypatch):
     with patch.object(main, "place_market_order") as m:
         assert main._place_one("t", "c", "BUY", 10.0, 0.5, "M", "YES") is True
         m.assert_not_called()
+
+
+def test_place_one_passes_custom_order_type(main_mod):
+    with patch.object(main_mod, "place_market_order", return_value={"orderID": "abc", "status": "ok"}) as mocked:
+        assert main_mod._place_one("token", "cond", "SELL", 1.0, 0.25, "Market", "YES", order_type="FAK") is True
+        mocked.assert_called_once()
+        assert mocked.call_args.kwargs["order_type"] == "FAK"

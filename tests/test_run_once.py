@@ -167,15 +167,15 @@ def test_run_once_startup_reconcile_sells_excess_position(main_mod, monkeypatch)
 
     placed = []
 
-    def fake_place(asset, condition_id, side, my_notional, worst_price, title, outcome="?"):
-        placed.append((asset, side, round(my_notional, 2), round(worst_price, 3), title, outcome))
+    def fake_place(asset, condition_id, side, my_notional, worst_price, title, outcome="?", order_type="FOK"):
+        placed.append((asset, side, round(my_notional, 2), round(worst_price, 3), title, outcome, order_type))
         return True
 
     monkeypatch.setattr(main, "_place_one", fake_place)
 
     main.run_once()
 
-    assert placed == [("asset-1", "SELL", 0.15, 0.01, "Market one", "YES")]
+    assert placed == [("asset-1", "SELL", 0.15, 0.01, "Market one", "YES", "FAK")]
 
 
 def test_run_once_single_sell_dust_remainder_marks_seen_and_skips_order(main_mod, monkeypatch):

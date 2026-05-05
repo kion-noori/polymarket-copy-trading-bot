@@ -225,9 +225,10 @@ def place_market_order(
     side: str,
     notional_usd: float,
     worst_price: float,
+    order_type: str = "FOK",
 ) -> dict[str, Any] | None:
     """
-    Place a market order (FOK).
+    Place a market order.
     - BUY: amount = notional_usd (dollars to spend), price = worst acceptable price (slippage).
     - SELL: amount = shares to sell (notional_usd / price ≈ shares), price = worst acceptable.
     Returns response dict with orderID, status, etc., or None on failure.
@@ -238,6 +239,7 @@ def place_market_order(
     _require_client_lib()
     options = get_market_options(condition_id, token_id)
     side_val = BUY if side.upper() == "BUY" else SELL
+    chosen_order_type = getattr(OrderType, order_type, OrderType.FOK)
     client = get_client()
     last_err = None
     for attempt in range(ORDER_RETRIES):
@@ -258,17 +260,17 @@ def place_market_order(
                 amount=amount,
                 side=side_val,
                 price=attempt_price,
-                order_type=OrderType.FOK,
+                order_type=chosen_order_type,
             )
             if USING_CLOB_V2 and hasattr(client, "create_and_post_market_order"):
                 resp = client.create_and_post_market_order(
                     order_args=order_args,
                     options=options,
-                    order_type=OrderType.FOK,
+                    order_type=chosen_order_type,
                 )
             else:
                 signed = client.create_market_order(order_args, options=options)
-                resp = client.post_order(signed, OrderType.FOK)
+                resp = client.post_order(signed, chosen_order_type)
             if isinstance(resp, dict):
                 return resp
             return {"orderID": getattr(resp, "orderID", ""), "status": getattr(resp, "status", "unknown")}
