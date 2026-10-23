@@ -6,7 +6,7 @@ import pytest
 
 
 @pytest.fixture
-def main_mod(monkeypatch):
+def main_mod(monkeypatch, tmp_path):
     monkeypatch.setenv("TARGET_WALLET", "0x" + "1" * 40)
     monkeypatch.setenv("FUNDER_ADDRESS", "0x" + "2" * 40)
     monkeypatch.setenv("TEST_MODE", "0")
@@ -21,6 +21,8 @@ def main_mod(monkeypatch):
 
     importlib.reload(config)
     importlib.reload(main)
+    monkeypatch.setattr(main, "LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(main, "get_order_execution", lambda *args: ("pending", []))
     return main
 
 
@@ -41,7 +43,7 @@ def test_place_one_live_success_returns_true(main_mod):
 
 
 def test_place_one_live_failure_returns_false(main_mod):
-    with patch.object(main_mod, "place_market_order", return_value=None):
+    with patch.object(main_mod, "place_market_order", return_value={"success": False, "status": "rejected"}):
         assert (
             main_mod._place_one(
                 "token",
@@ -65,6 +67,7 @@ def test_place_one_test_mode_returns_true_without_order(main_mod, monkeypatch):
 
     importlib.reload(config)
     importlib.reload(main)
+    monkeypatch.setattr(main, "LOG_DIR", str(main_mod.journal.JOURNAL_FILE.parent / "logs"))
     with patch.object(main, "place_market_order") as m:
         assert main._place_one("t", "c", "BUY", 10.0, 0.5, "M", "YES") is True
         m.assert_not_called()

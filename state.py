@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 
-from config import TARGET_WALLET
+from config import TARGET_WALLET, TEST_MODE
 
 logger = logging.getLogger(__name__)
 
 STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
-STATE_FILE = os.path.join(STATE_DIR, "seen_trades.json")
+STATE_FILE = os.path.join(STATE_DIR, "test_seen_trades.json" if TEST_MODE else "seen_trades.json")
 MAX_SEEN = 10_000  # Keep last N to avoid unbounded growth
 
 # In-process cache (single bot process). None = not loaded from disk yet.
@@ -34,6 +35,10 @@ def _load_full_from_disk() -> tuple[set[str], list[str], dict[str, int]]:
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
             data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get("seen_tx_hashes", []), list):
+            raise RuntimeError("Invalid processed-trade state; execution stopped")
+        if data.get("target") and data["target"].lower() != TARGET_WALLET.lower():
+            raise RuntimeError("Processed-trade state belongs to a different target wallet")
         raw_seen = data.get("seen_tx_hashes", [])
         seen_order: list[str] = []
         seen: set[str] = set()
@@ -60,8 +65,7 @@ def _load_full_from_disk() -> tuple[set[str], list[str], dict[str, int]]:
                     failures[str(k)] = iv
         return seen, seen_order, failures
     except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Could not load state file: %s", e)
-        return set(), [], {}
+        raise RuntimeError("State file unreadable; refusing to replay historical trades") from e
 
 
 def _ensure_loaded() -> None:
@@ -110,25 +114,25 @@ def _save_state() -> None:
         if h in seen:
             del failures[h]
     fc_out = {k: v for k, v in failures.items() if v > 0}
-    try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "target": TARGET_WALLET,
-                    "seen_tx_hashes": seen_order,
-                    "order_failure_counts": fc_out,
-                },
-                f,
-                indent=0,
-            )
-    except OSError as e:
-        logger.warning("Could not save state file: %s", e)
+    # Atomic replacement prevents a crash leaving a truncated state file.
+    directory = os.path.dirname(STATE_FILE)
+    os.makedirs(directory, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=directory, encoding="utf-8", delete=False) as f:
+        json.dump({"target": TARGET_WALLET, "seen_tx_hashes": seen_order,
+                   "order_failure_counts": fc_out}, f)
+        f.flush()
+        os.fsync(f.fileno())
+        temporary = f.name
+    os.replace(temporary, STATE_FILE)
 
 
 def is_already_seen(transaction_hash: str) -> bool:
     if not transaction_hash:
         return False
-    return transaction_hash in _get_seen()
+    seen = _get_seen()
+    # Legacy deployments stored the tx hash alone. Honor it during migration;
+    # never replay historical transactions when switching to asset/side keys.
+    return transaction_hash in seen or transaction_hash.split(":", 1)[0] in seen
 
 
 def mark_seen(transaction_hash: str) -> None:
@@ -184,3 +188,7 @@ def note_live_order_failure(
         max_count = max(max_count, failures[h])
     _save_state()
     return max_count >= max_attempts
+
+
+def get_failure_count(transaction_hash: str) -> int:
+    return _get_failure_counts().get(transaction_hash, 0)

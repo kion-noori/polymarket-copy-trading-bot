@@ -38,11 +38,11 @@ POLY_API_PASSPHRASE = os.getenv("POLY_API_PASSPHRASE", "").strip()
 
 # Polling
 try:
-    POLL_INTERVAL_SEC = max(10, int(os.getenv("POLL_INTERVAL_SEC", "15")))
+    POLL_INTERVAL_SEC = max(2, int(os.getenv("POLL_INTERVAL_SEC", "5")))
 except (TypeError, ValueError):
-    POLL_INTERVAL_SEC = 15
+    POLL_INTERVAL_SEC = 5
 try:
-    RECENT_TRADES_PAGE_SIZE = max(10, int(os.getenv("RECENT_TRADES_PAGE_SIZE", "100")))
+    RECENT_TRADES_PAGE_SIZE = min(1000, max(10, int(os.getenv("RECENT_TRADES_PAGE_SIZE", "100"))))
 except (TypeError, ValueError):
     RECENT_TRADES_PAGE_SIZE = 100
 try:
@@ -68,7 +68,7 @@ SIZE_MULTIPLIER = _float_env("SIZE_MULTIPLIER", 1.0)
 MIN_NOTIONAL = _float_env("MIN_NOTIONAL", 5.0)
 MAX_TRADE_USD = _float_env("MAX_TRADE_USD", 0)  # 0 = no absolute cap, only % cap
 
-# BUY: worst acceptable price vs target fill (FOK limit). Default 2% — tight entries.
+# BUY: worst acceptable price vs target fill. Default 2% — tight entries.
 SLIPPAGE_FRACTION = _float_env("SLIPPAGE_FRACTION", 0.02)
 # SELL: default very wide so we follow target exits even if market dropped (floor 0.01).
 SELL_SLIPPAGE_FRACTION = _float_env("SELL_SLIPPAGE_FRACTION", 0.99)
@@ -94,6 +94,7 @@ def _bool_env(name: str, default: bool) -> bool:
         return default
     return v in ("1", "true", "yes", "on")
 
+COPY_ORDER_TYPE = os.getenv("COPY_ORDER_TYPE", "FAK").strip().upper()
 PARTIAL_FALLBACK_ENABLED = _bool_env("PARTIAL_FALLBACK_ENABLED", True)
 PARTIAL_FALLBACK_FRACTION = _float_env("PARTIAL_FALLBACK_FRACTION", 0.5)
 PARTIAL_FALLBACK_MIN_NOTIONAL = _float_env("PARTIAL_FALLBACK_MIN_NOTIONAL", 1.0)
@@ -120,7 +121,7 @@ except (TypeError, ValueError):
     MAX_TRADE_AGE_SEC = 3600
 
 # Safety: test mode logs what would be done without placing orders
-TEST_MODE = os.getenv("TEST_MODE", "").strip().lower() in ("1", "true", "yes")
+TEST_MODE = _bool_env("TEST_MODE", True)
 ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "").strip()
 try:
     ALERT_MIN_INTERVAL_SEC = max(0, int(os.getenv("ALERT_MIN_INTERVAL_SEC", "300")))
@@ -163,6 +164,8 @@ def validate_config() -> list[str]:
             errors.append("PRIVATE_KEY must be set (0x-prefixed)")
         if not all([POLY_API_KEY, POLY_API_SECRET, POLY_API_PASSPHRASE]):
             errors.append("POLY_API_KEY, POLY_API_SECRET, POLY_API_PASSPHRASE must all be set")
+    if COPY_ORDER_TYPE not in ("FAK", "FOK"):
+        errors.append("COPY_ORDER_TYPE must be FAK or FOK")
     if not (0 < MAX_PCT_PER_TRADE <= 1):
         errors.append("MAX_PCT_PER_TRADE must be in (0, 1]")
     if not (0 < SIZE_MULTIPLIER <= 2):

@@ -55,3 +55,13 @@ def test_compute_my_sell_notional_does_not_floor_up():
 
 def test_compute_my_sell_notional_target_unknown_returns_zero():
     assert sizing.compute_my_sell_notional(100.0, 500.0, 0.0) == 0.0
+
+
+def test_minimum_never_overrides_percentage_cap():
+    assert sizing.compute_my_notional(1, 10, 1000) == 1
+
+
+def test_minimum_never_overrides_dollar_cap(monkeypatch):
+    import config
+    monkeypatch.setattr(config, "MAX_TRADE_USD", 2)
+    assert sizing.compute_my_notional(1, 100, 1000) == 2

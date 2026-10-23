@@ -82,3 +82,61 @@ curl -s https://polymarket.com/api/geoblock
 - Rotate exposed passwords.
 - Prefer SSH keys for long-term admin access.
 - Use webhook alerts if possible.
+
+## October 2026 update
+
+Local implementation is ready for review; deployment is pending. See [project status](PROJECT_STATUS.md). Data API v1 is scheduled to retire October 24, 2026.
+
+Do not copy the laptop `.env` to the server. The laptop was last observed in test mode with a 45-second override. Server credentials/settings must be inspected and retained separately. The new code default is five seconds, but an existing override wins.
+
+## Read-only account review
+
+On the **Mac**, connect first:
+
+```bash
+ssh root@216.238.91.62
+```
+
+Then, **on the server after deploying the new code**:
+
+```bash
+cd /root/polymarket-copy-trading-bot
+.venv/bin/python scripts/review_performance.py --days 7
+cat logs/performance_review.md
+```
+
+The JSON file preserves raw public observations; the Markdown file summarizes them. Only the server's new journal can identify its confirmed bot fills. Historical CSVs, manual trades and new deposits must not be treated as proof of bot returns.
+
+## Uncertain orders
+
+New logs say `Order submitted` when accepted and `Order confirmed` when settled. Confirmed fills are exported to `logs/confirmed_fills.csv`. Pending orders reserve their source trades and block the same asset until resolved.
+
+List uncertain/pending intents without changing them:
+
+```bash
+.venv/bin/python scripts/manage_orders.py
+```
+
+If a POST timed out without an order ID, inspect the account's exchange history. Do not delete the JSON state or SQLite journal. Once an existing order ID is identified, stop the bot while reconciling and attach it using the full intent ID and exchange order ID:
+
+```bash
+.venv/bin/python scripts/manage_orders.py --intent INTENT_ID --attach-order ORDER_ID
+```
+
+The tool checks asset and side before linking, and posts no order. On restart the bot verifies its fills.
+
+If you have verified that **no order or fill exists**, clear only that uncertain intent:
+
+```bash
+.venv/bin/python scripts/manage_orders.py --intent INTENT_ID --close-unsubmitted --confirm-no-order
+```
+
+This releases the asset block without automatically replaying the original target trade. Never use this option to discard a real order whose outcome is unknown.
+
+## Deployment review checklist
+
+Before any restart/update, capture current service status, service interpreter path, server git revision, nonsecret config, and current holdings. The last recorded server path is `/root/polymarket-copy-trading-bot/.venv/bin/python`.
+
+Stop the service before backing up state and updating code. Preserve `.env`, the full `state/` directory, and logs. Install `requirements.txt` using the exact service interpreter, run the readiness checker, then validate submitted and confirmed fills separately after a controlled restart. Review `RECONCILE_ON_START` before restarting because it can submit sales immediately.
+
+Keep backups on the server; never commit credentials. Running two copies against the same funded account is unsupported even though one checkout has a process lock.

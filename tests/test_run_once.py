@@ -28,6 +28,10 @@ def main_mod(tmp_path, monkeypatch):
     monkeypatch.setattr(st, "STATE_FILE", str(tmp_path / "seen.json"))
     st.clear_seen_memory_cache()
     importlib.reload(main)
+    monkeypatch.setattr(main, "LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(main, "get_current_price", lambda asset: 0.5)
+    monkeypatch.setattr(main, "get_bid_ask_prices", lambda asset: (0.49, 0.51))
+    monkeypatch.setattr(main, "get_order_execution", lambda *args: ("pending", []))
     yield main, st
     st.clear_seen_memory_cache()
 
@@ -55,12 +59,8 @@ def test_run_once_skips_asset_when_recent_window_contains_buy_then_sell(main_mod
         "title": "Market A",
     }
 
-    def fake_get_trades(limit=100, offset=0):
-        if offset == 0:
-            return [sell_trade]
-        if offset == 100:
-            return [buy_trade]
-        return []
+    def fake_get_trades(limit=100, **kwargs):
+        return [buy_trade, sell_trade]
 
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(main, "get_trades", fake_get_trades)
@@ -79,8 +79,8 @@ def test_run_once_skips_asset_when_recent_window_contains_buy_then_sell(main_mod
     main.run_once()
 
     assert calls == []
-    assert st.is_already_seen("0xbuy") is True
-    assert st.is_already_seen("0xsell") is True
+    assert st.is_already_seen(main.trade_key(buy_trade)) is True
+    assert st.is_already_seen(main.trade_key(sell_trade)) is True
 
 
 def test_run_once_single_sell_without_position_marks_seen_and_skips_order(main_mod, monkeypatch):
@@ -97,7 +97,7 @@ def test_run_once_single_sell_without_position_marks_seen_and_skips_order(main_m
     }
 
     placed = {"called": False}
-    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [trade] if offset == 0 else [])
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [trade])
     monkeypatch.setattr(
         main,
         "get_portfolio_value",
@@ -114,7 +114,7 @@ def test_run_once_single_sell_without_position_marks_seen_and_skips_order(main_m
     main.run_once()
 
     assert placed["called"] is False
-    assert st.is_already_seen("0xsell-only") is True
+    assert st.is_already_seen(main.trade_key(trade)) is True
 
 
 def test_run_once_startup_reconcile_sells_excess_position(main_mod, monkeypatch):
@@ -125,7 +125,7 @@ def test_run_once_startup_reconcile_sells_excess_position(main_mod, monkeypatch)
     monkeypatch.setattr(main, "TARGET_WALLET", "target-wallet")
     monkeypatch.setattr(main, "FUNDER_ADDRESS", "my-wallet")
 
-    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [])
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [])
     monkeypatch.setattr(
         main,
         "get_portfolio_value",
@@ -167,7 +167,7 @@ def test_run_once_startup_reconcile_sells_excess_position(main_mod, monkeypatch)
 
     placed = []
 
-    def fake_place(asset, condition_id, side, my_notional, worst_price, title, outcome="?", order_type="FOK"):
+    def fake_place(asset, condition_id, side, my_notional, worst_price, title, outcome="?", order_type="FOK", **kwargs):
         placed.append((asset, side, round(my_notional, 2), round(worst_price, 3), title, outcome, order_type))
         return True
 
@@ -175,7 +175,7 @@ def test_run_once_startup_reconcile_sells_excess_position(main_mod, monkeypatch)
 
     main.run_once()
 
-    assert placed == [("asset-1", "SELL", 0.15, 0.01, "Market one", "YES", "FAK")]
+    assert placed == [("asset-1", "SELL", 7.5, 0.01, "Market one", "YES", "FAK")]
 
 
 def test_run_once_single_sell_dust_remainder_marks_seen_and_skips_order(main_mod, monkeypatch):
@@ -192,7 +192,7 @@ def test_run_once_single_sell_dust_remainder_marks_seen_and_skips_order(main_mod
     }
 
     placed = {"called": False}
-    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [trade] if offset == 0 else [])
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [trade])
     monkeypatch.setattr(
         main,
         "get_portfolio_value",
@@ -209,7 +209,7 @@ def test_run_once_single_sell_dust_remainder_marks_seen_and_skips_order(main_mod
     main.run_once()
 
     assert placed["called"] is False
-    assert st.is_already_seen("0xsell-dust") is True
+    assert st.is_already_seen(main.trade_key(trade)) is True
 
 
 def test_run_once_failed_live_order_retries_then_uses_partial_fallback(main_mod, monkeypatch):
@@ -225,7 +225,7 @@ def test_run_once_failed_live_order_retries_then_uses_partial_fallback(main_mod,
         "title": "Market C",
     }
 
-    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [trade] if offset == 0 else [])
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [trade])
     monkeypatch.setattr(
         main,
         "get_portfolio_value",
@@ -237,23 +237,23 @@ def test_run_once_failed_live_order_retries_then_uses_partial_fallback(main_mod,
     def fake_place_market_order(**kwargs):
         calls.append(kwargs["notional_usd"])
         if len(calls) < 3:
-            return None
+            return {"success": False, "status": "rejected"}
         return {"orderID": "partial-ok", "status": "matched"}
 
     monkeypatch.setattr(main, "place_market_order", fake_place_market_order)
 
     main.run_once()
-    assert st.is_already_seen("0xfail-buy") is False
+    assert st.is_already_seen(main.trade_key(trade)) is False
 
     first = json.loads(open(st.STATE_FILE, encoding="utf-8").read())
-    assert first["order_failure_counts"]["0xfail-buy"] == 1
+    assert first["order_failure_counts"][main.trade_key(trade)] == 1
 
     main.run_once()
-    assert st.is_already_seen("0xfail-buy") is True
+    assert st.is_already_seen(main.trade_key(trade)) is True
     assert calls == [5.0, 5.0, 2.5]
 
     second = json.loads(open(st.STATE_FILE, encoding="utf-8").read())
-    assert "0xfail-buy" not in (second.get("order_failure_counts") or {})
+    assert main.trade_key(trade) not in (second.get("order_failure_counts") or {})
 
 
 def test_run_once_failed_live_order_fallback_failure_still_abandons(main_mod, monkeypatch):
@@ -269,20 +269,20 @@ def test_run_once_failed_live_order_fallback_failure_still_abandons(main_mod, mo
         "title": "Market Hard",
     }
 
-    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [trade] if offset == 0 else [])
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [trade])
     monkeypatch.setattr(
         main,
         "get_portfolio_value",
         lambda user: 1000.0 if user == main.FUNDER_ADDRESS else 2000.0,
     )
     monkeypatch.setattr(main, "get_collateral_balance_usdc", lambda: 0.0)
-    monkeypatch.setattr(main, "place_market_order", lambda **kwargs: None)
+    monkeypatch.setattr(main, "place_market_order", lambda **kwargs: {"success": False, "status": "rejected"})
 
     main.run_once()
-    assert st.is_already_seen("0xfail-buy-hard") is False
+    assert st.is_already_seen(main.trade_key(trade)) is False
 
     main.run_once()
-    assert st.is_already_seen("0xfail-buy-hard") is True
+    assert st.is_already_seen(main.trade_key(trade)) is True
 
 
 def test_run_once_skips_buy_above_max_buy_price(main_mod, monkeypatch):
@@ -299,7 +299,7 @@ def test_run_once_skips_buy_above_max_buy_price(main_mod, monkeypatch):
     }
 
     placed = {"called": False}
-    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [trade] if offset == 0 else [])
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [trade])
     monkeypatch.setattr(
         main,
         "get_portfolio_value",
@@ -312,7 +312,7 @@ def test_run_once_skips_buy_above_max_buy_price(main_mod, monkeypatch):
     main.run_once()
 
     assert placed["called"] is False
-    assert st.is_already_seen("0xhi-price") is True
+    assert st.is_already_seen(main.trade_key(trade)) is True
 
 
 def test_run_once_live_safe_startup_marks_visible_trades_seen(tmp_path, monkeypatch):
@@ -349,7 +349,7 @@ def test_run_once_live_safe_startup_marks_visible_trades_seen(tmp_path, monkeypa
     }
 
     placed = {"count": 0}
-    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [trade] if offset == 0 else [])
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [trade])
     monkeypatch.setattr(
         main,
         "get_portfolio_value",
@@ -361,7 +361,7 @@ def test_run_once_live_safe_startup_marks_visible_trades_seen(tmp_path, monkeypa
     main.run_once()
 
     assert placed["count"] == 0
-    assert st.is_already_seen("0xstartup") is True
+    assert st.is_already_seen(main.trade_key(trade)) is True
 
 
 def test_run_once_catchup_sell_only_places_order_when_shares_exist(main_mod, monkeypatch):
@@ -379,7 +379,7 @@ def test_run_once_catchup_sell_only_places_order_when_shares_exist(main_mod, mon
 
     placed: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(main, "get_trades", lambda limit=100, offset=0: [sell_trade] if offset == 0 else [])
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [sell_trade])
     monkeypatch.setattr(
         main,
         "get_portfolio_value",
@@ -396,4 +396,68 @@ def test_run_once_catchup_sell_only_places_order_when_shares_exist(main_mod, mon
     main.run_once()
 
     assert placed == [("SELL", "asset-catchup-sell")]
-    assert st.is_already_seen("0xcatchup-sell") is True
+    assert st.is_already_seen(main.trade_key(sell_trade)) is True
+
+
+def test_partial_sell_keeps_reference_share_quantity(main_mod, monkeypatch):
+    main, st = main_mod
+    trade = {"transactionHash": "0xpartial", "side": "SELL", "size": 20, "price": 0.5,
+             "asset": "token", "conditionId": "cond", "timestamp": 100}
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [trade])
+    monkeypatch.setattr(main, "get_portfolio_value", lambda user: 100 if user == main.FUNDER_ADDRESS else 200)
+    monkeypatch.setattr(main, "get_collateral_balance_usdc", lambda: 0)
+    monkeypatch.setattr(main, "get_conditional_token_balance_shares", lambda token: 100)
+    calls = []
+    monkeypatch.setattr(main, "place_market_order", lambda **kwargs: calls.append(kwargs) or {"orderID": "order"})
+    main.run_once()
+    assert calls[0]["shares"] == 10
+    assert calls[0]["worst_price"] == 0.01
+
+
+def test_unknown_submission_does_not_repost_on_next_poll(main_mod, monkeypatch):
+    main, st = main_mod
+    trade = {"transactionHash": "0xuncertain", "side": "BUY", "size": 20, "price": 0.5,
+             "asset": "token", "conditionId": "cond", "timestamp": 100}
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [trade])
+    monkeypatch.setattr(main, "get_portfolio_value", lambda user: 100)
+    monkeypatch.setattr(main, "get_collateral_balance_usdc", lambda: 10)
+    calls = []
+    monkeypatch.setattr(main, "place_market_order", lambda **kwargs: calls.append(kwargs) or {"status": "unknown"})
+    main.run_once()
+    st.clear_seen_memory_cache()
+    main.run_once()
+    assert len(calls) == 1
+    assert main.journal.active_orders()[0]["status"] == "unknown"
+
+
+def test_quote_outage_defers_without_consuming_trade(main_mod, monkeypatch):
+    main, st = main_mod
+    trade = {"transactionHash": "0xquote", "side": "BUY", "size": 20, "price": 0.5,
+             "asset": "token", "conditionId": "cond", "timestamp": 100}
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [trade])
+    monkeypatch.setattr(main, "get_portfolio_value", lambda user: 100)
+    monkeypatch.setattr(main, "get_collateral_balance_usdc", lambda: 10)
+    monkeypatch.setattr(main, "get_current_price", lambda asset: None)
+    main.run_once()
+    assert not st.is_already_seen(main.trade_key(trade))
+
+
+def test_journal_repairs_seen_state_before_growing_catchup_group(main_mod, monkeypatch):
+    """A crash after a confirmed post but before mark_seen must not replay its leg."""
+    main, st = main_mod
+    first = {"transactionHash": "first", "side": "BUY", "size": 10, "price": 0.5,
+             "asset": "token", "conditionId": "cond", "timestamp": 100}
+    second = {**first, "transactionHash": "second", "timestamp": 200}
+    request = {"asset": "token", "side": "BUY", "source_ids": [main.trade_key(first)], "reference_price": 0.5}
+    key, _ = main.journal.reserve(request)
+    main.journal.update(key, "filled", response={"orderID": "old"}, fills=[])
+    monkeypatch.setattr(main, "get_trades", lambda **kwargs: [first, second])
+    monkeypatch.setattr(main, "get_portfolio_value", lambda user: 100)
+    monkeypatch.setattr(main, "get_collateral_balance_usdc", lambda: 10)
+    calls = []
+    monkeypatch.setattr(main, "place_market_order", lambda **kw: calls.append(kw) or {"orderID": "new"})
+    main.run_once()
+    assert st.is_already_seen(main.trade_key(first))
+    requests = [json.loads(row["request"]) for row in main.journal.all_orders()]
+    assert len(calls) == 1
+    assert requests[-1]["source_ids"] == [main.trade_key(second)]

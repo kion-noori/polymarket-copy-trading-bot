@@ -66,3 +66,12 @@ def test_mark_seen_clears_failure_count(isolated_state, tmp_path):
     st.mark_seen("0xb")
     final = json.loads((tmp_path / "seen.json").read_text(encoding="utf-8"))
     assert "0xb" not in (final.get("order_failure_counts") or {})
+
+
+def test_legacy_transaction_hash_suppresses_new_asset_keys(isolated_state):
+    import state
+    state.mark_seen("0xold")
+    assert state.is_already_seen("0xold:token:BUY")
+    state.mark_seen("0xnew:token:BUY")
+    assert state.is_already_seen("0xnew:token:BUY")
+    assert not state.is_already_seen("0xnew:other:BUY")

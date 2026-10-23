@@ -33,7 +33,11 @@ def compute_my_notional(
         if capped < params.min_notional:
             return 0.0
         return capped
-    return max(capped, params.min_notional)
+    # The minimum must not override either hard cap.
+    floor = min(params.min_notional, my_portfolio_value * params.max_pct_per_trade)
+    if params.max_trade_usd > 0:
+        floor = min(floor, params.max_trade_usd)
+    return max(capped, floor)
 
 
 def compute_my_sell_notional(

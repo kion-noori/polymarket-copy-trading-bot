@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-import time
+import math
+from decimal import Decimal, ROUND_FLOOR, ROUND_CEILING
 from typing import Any
 
 try:
@@ -21,30 +22,10 @@ try:
     SELL = Side.SELL
     USING_CLOB_V2 = True
 except ImportError:
-    try:
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import (
-            ApiCreds,
-            AssetType,
-            BalanceAllowanceParams,
-            MarketOrderArgs,
-            OrderType,
-            PartialCreateOrderOptions,
-        )
-        from py_clob_client.order_builder.constants import BUY, SELL
-
-        USING_CLOB_V2 = False
-    except ImportError:
-        ClobClient = None
-        ApiCreds = None
-        AssetType = None
-        BalanceAllowanceParams = None
-        MarketOrderArgs = None
-        OrderType = None
-        PartialCreateOrderOptions = None
-        BUY = "BUY"
-        SELL = "SELL"
-        USING_CLOB_V2 = False
+    ClobClient = ApiCreds = AssetType = BalanceAllowanceParams = None
+    MarketOrderArgs = OrderType = PartialCreateOrderOptions = None
+    BUY, SELL = "BUY", "SELL"
+    USING_CLOB_V2 = False
 
 from config import (
     CHAIN_ID,
@@ -55,21 +36,16 @@ from config import (
     POLY_API_SECRET,
     PRIVATE_KEY,
     SIGNATURE_TYPE,
+    MAX_BUY_PRICE,
 )
 
 logger = logging.getLogger(__name__)
-
-# Retry on transient API errors
-ORDER_RETRIES = 3
-ORDER_RETRY_DELAY_SEC = 3
-BUY_RETRY_PRICE_STEP_POINTS = 0.02
-BUY_MAX_RETRY_PRICE_BONUS = 0.05
 
 _client: ClobClient | None = None
 
 
 def _require_client_lib() -> None:
-    if ClobClient is None:
+    if ClobClient is None or not USING_CLOB_V2:
         raise RuntimeError(
             "No Polymarket CLOB client is installed. Install requirements.txt before live trading."
         )
@@ -92,13 +68,9 @@ def get_client() -> ClobClient:
             creds=creds,
             signature_type=SIGNATURE_TYPE,
             funder=FUNDER_ADDRESS,
+            retry_on_error=False,
         )
-        if USING_CLOB_V2:
-            logger.info("Using Polymarket CLOB V2 client for live trading")
-        else:
-            logger.warning(
-                "Using legacy Polymarket CLOB client. Live trading may fail after the April 28, 2026 V2 migration."
-            )
+        logger.info("Using Polymarket CLOB V2 client for live trading")
     return _client
 
 
@@ -106,27 +78,10 @@ def get_market_options(condition_id: str, token_id: str) -> PartialCreateOrderOp
     """Get tick_size and neg_risk for a market (required for order placement)."""
     _require_client_lib()
     client = get_client()
-    try:
-        market = client.get_market(condition_id)
-        if isinstance(market, dict):
-            tick = market.get("minimum_tick_size", "0.01")
-            neg = market.get("neg_risk", False)
-        else:
-            tick = getattr(market, "minimum_tick_size", "0.01")
-            neg = getattr(market, "neg_risk", False)
-        tick_str = str(tick) if tick is not None else "0.01"
-        return PartialCreateOrderOptions(tick_size=tick_str, neg_risk=bool(neg))
-    except Exception as e:
-        logger.warning("get_market failed for %s, using defaults: %s", condition_id[:16], e)
-        try:
-            tick = client.get_tick_size(token_id)
-            neg = client.get_neg_risk(token_id)
-            return PartialCreateOrderOptions(
-                tick_size=str(tick) if tick is not None else "0.01",
-                neg_risk=bool(neg),
-            )
-        except Exception:
-            return PartialCreateOrderOptions(tick_size="0.01", neg_risk=False)
+    info = client.get_clob_market_info(condition_id)
+    if not isinstance(info, dict) or not info.get("mts"):
+        raise ValueError("Market metadata unavailable; refusing guessed tick size")
+    return PartialCreateOrderOptions(tick_size=str(info["mts"]), neg_risk=bool(info.get("nr", False)))
 
 
 def get_conditional_token_balance_shares(token_id: str) -> float | None:
@@ -149,9 +104,8 @@ def get_conditional_token_balance_shares(token_id: str) -> float | None:
             raw = resp.get("balance")
         else:
             raw = getattr(resp, "balance", None)
-        if raw is None:
-            return None
-        return float(raw) / 1_000_000.0
+        value = float(raw) / 1_000_000.0
+        return value if math.isfinite(value) and value >= 0 else None
     except Exception as e:
         logger.debug(
             "get_conditional_token_balance_shares failed for %s: %s",
@@ -165,7 +119,7 @@ def get_collateral_balance_usdc() -> float:
     """
     USDC collateral on the CLOB (cash available for new buys). Requires L2 auth.
     Balance is returned in micro-USDC (1e6); we convert to dollars.
-    Returns 0.0 if credentials are missing or the call fails.
+    Returns 0.0 without credentials; raises if an authenticated read fails.
     """
     if not PRIVATE_KEY or not POLY_API_KEY:
         return 0.0
@@ -178,112 +132,138 @@ def get_collateral_balance_usdc() -> float:
             raw = resp.get("balance")
         else:
             raw = getattr(resp, "balance", None)
-        if raw is None:
-            return 0.0
-        return float(raw) / 1_000_000.0
+        value = float(raw) / 1_000_000.0
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("Invalid collateral balance")
+        return value
     except Exception as e:
-        logger.debug("get_collateral_balance_usdc failed: %s", e)
-        return 0.0
+        raise RuntimeError("Collateral balance unavailable; execution deferred") from e
+
+
+def _price(response, key: str) -> float | None:
+    raw = response.get(key) if isinstance(response, dict) else response
+    try:
+        value = float(raw)
+        return value if math.isfinite(value) and 0 < value < 1 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def get_current_price(token_id: str) -> float | None:
-    """Return current midpoint price for a token (for mark-to-market). None if unavailable."""
+    """Parse SDK JSON responses; try the ask if midpoint is unavailable."""
+    client = get_client()
     try:
-        _require_client_lib()
-        client = get_client()
-        mid = client.get_midpoint(token_id)
+        mid = _price(client.get_midpoint(token_id), "mid")
         if mid is not None:
-            return float(mid)
-        price = client.get_price(token_id, "BUY")
-        return float(price) if price is not None else None
-    except Exception as e:
-        logger.debug("get_current_price failed for %s: %s", token_id[:16] if token_id else "", e)
+            return mid
+    except Exception:
+        pass
+    try:
+        return _price(client.get_price(token_id, "SELL"), "price")
+    except Exception:
         return None
 
 
 def get_bid_ask_prices(token_id: str) -> tuple[float | None, float | None]:
-    """
-    Return (best_bid, best_ask) using client price helpers.
-    Assumes SELL price is current bid and BUY price is current ask.
-    """
     try:
-        _require_client_lib()
         client = get_client()
-        best_bid = client.get_price(token_id, "SELL")
-        best_ask = client.get_price(token_id, "BUY")
-        bid = float(best_bid) if best_bid is not None else None
-        ask = float(best_ask) if best_ask is not None else None
-        return bid, ask
-    except Exception as e:
-        logger.debug("get_bid_ask_prices failed for %s: %s", token_id[:16] if token_id else "", e)
+        return (_price(client.get_price(token_id, "BUY"), "price"),
+                _price(client.get_price(token_id, "SELL"), "price"))
+    except Exception:
         return None, None
 
 
 def place_market_order(
-    token_id: str,
-    condition_id: str,
-    side: str,
-    notional_usd: float,
-    worst_price: float,
-    order_type: str = "FOK",
+    token_id: str, condition_id: str, side: str, notional_usd: float,
+    worst_price: float, order_type: str = "FAK", *, shares: float | None = None,
 ) -> dict[str, Any] | None:
+    """One submission only. Unknown network outcomes must never be blindly retried.
+
+    SELL quantity is explicit shares, independent of the minimum sale price.
+    The caller writes a durable submission intent before entering this function.
     """
-    Place a market order.
-    - BUY: amount = notional_usd (dollars to spend), price = worst acceptable price (slippage).
-    - SELL: amount = shares to sell (notional_usd / price ≈ shares), price = worst acceptable.
-    Returns response dict with orderID, status, etc., or None on failure.
-    """
-    if notional_usd <= 0:
-        logger.warning("place_market_order: notional_usd <= 0, skipping")
-        return None
+    if side not in ("BUY", "SELL") or order_type not in ("FAK", "FOK"):
+        raise ValueError("Invalid side/order type")
+    if not math.isfinite(notional_usd) or notional_usd <= 0:
+        raise ValueError("Invalid order notional")
+    if not math.isfinite(worst_price) or not 0 < worst_price < 1:
+        raise ValueError("Invalid price limit")
+    if side == "SELL" and (shares is None or not math.isfinite(shares) or shares <= 0):
+        raise ValueError("SELL requires explicit positive shares")
     _require_client_lib()
     options = get_market_options(condition_id, token_id)
-    side_val = BUY if side.upper() == "BUY" else SELL
-    chosen_order_type = getattr(OrderType, order_type, OrderType.FOK)
+    tick = Decimal(str(options.tick_size))
+    rounding = ROUND_FLOOR if side == "BUY" else ROUND_CEILING
+    price = min(worst_price, MAX_BUY_PRICE) if side == "BUY" else worst_price
+    price = float((Decimal(str(price)) / tick).to_integral_value(rounding=rounding) * tick)
+    if not float(tick) <= price <= 1 - float(tick):
+        raise ValueError("Price limit cannot be represented by market tick size")
+    chosen = getattr(OrderType, order_type)
+    args = MarketOrderArgs(token_id=token_id, amount=notional_usd if side == "BUY" else shares,
+                           side=BUY if side == "BUY" else SELL, price=price, order_type=chosen,
+                           user_usdc_balance=notional_usd if side == "BUY" else 0)
     client = get_client()
-    last_err = None
-    for attempt in range(ORDER_RETRIES):
-        try:
-            attempt_price = worst_price
-            if side_val == BUY and attempt > 0:
-                retry_bonus = min(
-                    BUY_RETRY_PRICE_STEP_POINTS * attempt,
-                    BUY_MAX_RETRY_PRICE_BONUS,
-                )
-                attempt_price = min(0.99, worst_price + retry_bonus)
-            if side_val == BUY:
-                amount = notional_usd
+    # Signing failures happen before submission and are safe to retry next poll.
+    signed = client.create_market_order(args, options=options)
+    try:
+        response = client.post_order(signed, chosen)
+    except Exception as exc:
+        status = getattr(exc, "status_code", None)
+        if status in (400, 401, 403, 404, 422, 429):
+            return {"success": False, "status": "rejected", "errorMsg": str(exc)}
+        return {"status": "unknown", "errorMsg": "Order submission outcome unknown; manual reconciliation required"}
+    return response if isinstance(response, dict) else {"status": "unknown"}
+
+
+def get_order_execution(order_id: str, response: dict) -> tuple[str, list[dict]]:
+    """Return pending/filled/unfilled and confirmed executions only.
+
+    FAK may be partial. MATCHED/MINED are provisional; wait for CONFIRMED.
+    """
+    client = get_client()
+    order = client.get_order(order_id)
+    if not isinstance(order, dict):
+        return "pending", []
+    trade_ids = set(response.get("tradeIDs") or []) | set(order.get("associate_trades") or [])
+    fills = []
+    unresolved = False
+    if trade_ids:
+        from py_clob_client_v2 import TradeParams
+        for trade_id in sorted(trade_ids):
+            rows = client.get_trades(TradeParams(id=trade_id))
+            trade = next((row for row in rows if row.get("id") == trade_id), None)
+            if not trade:
+                unresolved = True
+                continue
+            status = str(trade.get("status", "")).upper()
+            if status == "FAILED":
+                continue
+            if status != "CONFIRMED":
+                unresolved = True
+                continue
+            if trade.get("taker_order_id") == order_id:
+                quantity, price = float(trade["size"]), float(trade["price"])
             else:
-                amount = notional_usd / attempt_price if attempt_price > 0 else notional_usd
-            order_args = MarketOrderArgs(
-                token_id=token_id,
-                amount=amount,
-                side=side_val,
-                price=attempt_price,
-                order_type=chosen_order_type,
-            )
-            if USING_CLOB_V2 and hasattr(client, "create_and_post_market_order"):
-                resp = client.create_and_post_market_order(
-                    order_args=order_args,
-                    options=options,
-                    order_type=chosen_order_type,
-                )
-            else:
-                signed = client.create_market_order(order_args, options=options)
-                resp = client.post_order(signed, chosen_order_type)
-            if isinstance(resp, dict):
-                return resp
-            return {"orderID": getattr(resp, "orderID", ""), "status": getattr(resp, "status", "unknown")}
-        except Exception as e:
-            last_err = e
-            logger.warning(
-                "place_market_order attempt %s/%s failed at price %.4f: %s",
-                attempt + 1,
-                ORDER_RETRIES,
-                attempt_price,
-                e,
-            )
-            if attempt < ORDER_RETRIES - 1:
-                time.sleep(ORDER_RETRY_DELAY_SEC)
-    logger.exception("place_market_order failed after %s attempts: %s", ORDER_RETRIES, last_err)
-    return None
+                maker = next((m for m in trade.get("maker_orders", []) if m.get("order_id") == order_id), None)
+                if maker is None:
+                    raise ValueError("Trade does not belong to submitted order")
+                quantity, price = float(maker["matched_amount"]), float(maker["price"])
+            if not math.isfinite(quantity) or not math.isfinite(price) or quantity <= 0 or not 0 < price <= 1:
+                raise ValueError("Invalid confirmed fill")
+            fills.append({"trade_id": trade_id, "shares": quantity, "price": price,
+                          "notional_usd": quantity * price,
+                          "timestamp": trade.get("match_time"),
+                          "transaction_hash": trade.get("transaction_hash", "")})
+    state = str(order.get("status", "")).upper()
+    if unresolved or state in ("LIVE", "DELAYED", "PENDING"):
+        return "pending", []
+    if fills:
+        return "filled", fills
+    if trade_ids and not unresolved:
+        # Every known execution failed definitively; no confirmed proceeds exist.
+        return "unfilled", []
+    if float(order.get("size_matched", 0) or 0) > 0:
+        return "pending", []
+    if state in ("CANCELED", "CANCELLED", "UNMATCHED", "INVALID", "EXPIRED"):
+        return "unfilled", []
+    return "pending", []

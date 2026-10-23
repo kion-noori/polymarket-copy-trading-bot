@@ -4,6 +4,8 @@ Polymarket copy-trading bot: watch a target wallet and mirror their trades with 
 
 from __future__ import annotations
 
+import json
+import fcntl
 import logging
 import os
 import time
@@ -11,6 +13,7 @@ from datetime import UTC, datetime
 
 from config import (
     ALERT_WEBHOOK_URL,
+    COPY_ORDER_TYPE,
     FUNDER_ADDRESS,
     MAX_LIVE_ORDER_ATTEMPTS,
     MAX_BUY_PRICE,
@@ -37,18 +40,20 @@ from config import (
     TEST_MODE,
     validate_config,
 )
-from data_api import get_positions, get_portfolio_value, get_trades
+from data_api import get_positions, get_portfolio_value, get_trades, trade_key
 from executor import (
     get_bid_ask_prices,
     get_collateral_balance_usdc,
     get_conditional_token_balance_shares,
     get_current_price,
+    get_order_execution,
     place_market_order,
 )
 from notifier import send_alert
+import order_journal as journal
 from risk_guards import is_group_too_old, is_trade_too_old, price_guard_allows, vwap_price_buy_group
 from sizing import compute_my_notional, compute_my_sell_notional
-from state import is_already_seen, mark_seen, mark_seen_batch, note_live_order_failure
+from state import get_failure_count, is_already_seen, mark_seen, mark_seen_batch, note_live_order_failure
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
@@ -71,7 +76,7 @@ def _normalize_outcome(trade: dict) -> str:
         if u: return u[:3]  # e.g. "Yes" -> "YES" via slice
     idx = trade.get("outcomeIndex")
     if idx is not None:
-        return "YES" if idx == 0 else "NO"
+        return "YES" if idx == 0 else "NO" if idx == 1 else "?"
     return "?"
 
 
@@ -223,64 +228,82 @@ def _log_theoretical_pnl() -> None:
 
 
 def _get_recent_trades() -> list[dict]:
-    """
-    Fetch a wider recent window than a single page so we can detect "bought then sold"
-    catch-up batches and avoid entering trades that are already closed.
-    """
-    all_trades: list[dict] = []
-    for page in range(RECENT_TRADES_MAX_PAGES):
-        batch = get_trades(limit=RECENT_TRADES_PAGE_SIZE, offset=page * RECENT_TRADES_PAGE_SIZE)
-        if not batch:
-            break
-        all_trades.extend(batch)
-    return sorted(all_trades, key=lambda t: t.get("timestamp") or 0)
+    return get_trades(limit=RECENT_TRADES_PAGE_SIZE, max_pages=RECENT_TRADES_MAX_PAGES)
+
+
+def _refresh_pending_orders() -> None:
+    if TEST_MODE:
+        return
+    changed = False
+    for row in journal.active_orders():
+        if not row["order_id"]:
+            logger.error("Uncertain submission for %s; asset blocked until reviewed (intent %s)",
+                         row["asset"][:16], row["intent_id"][:16])
+            send_alert("uncertain_order", f"Review uncertain submission {row['intent_id']}; no automatic repost")
+            continue
+        try:
+            status, fills = get_order_execution(row["order_id"], json.loads(row["response"]))
+        except Exception:
+            logger.warning("Order %s fill confirmation unavailable; keeping pending", row["order_id"])
+            continue
+        if status != "pending":
+            journal.update(row["intent_id"], status, fills=fills)
+            changed = True
+            logger.info("Order confirmed: orderID=%s state=%s filled_shares=%.6f",
+                        row["order_id"], status, sum(fill["shares"] for fill in fills))
+    if changed:
+        journal.export_fills(LOG_DIR)
 
 
 def _place_one(
-    asset: str,
-    condition_id: str,
-    side: str,
-    my_notional: float,
-    worst_price: float,
-    title: str,
-    outcome: str = "?",
-    order_type: str = "FOK",
+    asset: str, condition_id: str, side: str, my_notional: float, worst_price: float,
+    title: str, outcome: str = "?", order_type: str | None = None, *,
+    reference_price: float | None = None, source_ids: list[str] | None = None,
 ) -> bool:
+    """Reserve a durable intent before posting; acceptance is not a confirmed fill.
+
+    True means the intent is reserved/handled; pending or uncertain orders are
+    reconciled separately and cannot be posted twice. No-fill FAK is terminal;
+    partial fills are accepted without automatically chasing the remainder.
     """
-    Place a single order (or log in test mode).
-    Returns True if the mirror should be treated as done for state purposes:
-    test mode always True after simulation; live mode True only when order returns orderID.
-    """
-    shares = my_notional / worst_price if worst_price > 0 else 0
-    market_short = (title or "").strip() or "Unknown market"
-    logger.info(
-        "Trade: %s %s | %s | $%.2f @ %.3f | ~%.2f shares",
-        side,
-        outcome,
-        market_short,
-        my_notional,
-        worst_price,
-        shares,
-    )
+    reference_price = reference_price or worst_price
+    shares = my_notional / reference_price
+    logger.info("Trade: %s %s | %s | requested $%.2f, ~%.6f shares, price limit %.4f",
+                side, outcome, title or "Unknown market", my_notional, shares, worst_price)
     if TEST_MODE:
-        _append_trade_log(side, outcome, title or "", my_notional, worst_price, mode="test")
-        _apply_theoretical_trade(asset, side, my_notional, worst_price)
-        logger.info("[TEST MODE] No order placed (simulation only)")
+        _append_trade_log(side, outcome, title or "", my_notional, reference_price, mode="test")
+        _apply_theoretical_trade(asset, side, my_notional, reference_price)
         return True
-    resp = place_market_order(
-        token_id=asset,
-        condition_id=condition_id,
-        side=side,
-        notional_usd=my_notional,
-        worst_price=worst_price,
-        order_type=order_type,
-    )
-    if resp and resp.get("orderID"):
-        _append_trade_log(side, outcome, title or "", my_notional, worst_price, mode="live")
-        logger.info("Order placed: orderID=%s status=%s", resp.get("orderID"), resp.get("status"))
+    source_ids = source_ids or [f"reconcile:{asset}:{shares:.8f}"]
+    request = {"asset": asset, "condition_id": condition_id, "side": side,
+               "notional_usd": my_notional, "shares": shares if side == "SELL" else None,
+               "limit_price": worst_price, "reference_price": reference_price,
+               "source_ids": source_ids, "title": title, "outcome": outcome,
+               "order_type": order_type or COPY_ORDER_TYPE}
+    key, previous = journal.reserve(request)
+    if previous:
+        return previous["intent_id"] == key
+    try:
+        response = place_market_order(token_id=asset, condition_id=condition_id, side=side,
+                                      notional_usd=my_notional, worst_price=worst_price,
+                                      order_type=request["order_type"], shares=request["shares"])
+    except Exception as exc:
+        journal.update(key, "rejected", response={"errorMsg": str(exc)})
+        logger.warning("Order preparation failed: %s", exc)
+        return False
+    if response and response.get("orderID"):
+        journal.update(key, "pending", response=response)
+        logger.info("Order submitted: orderID=%s status=%s; awaiting confirmed fills",
+                    response["orderID"], response.get("status"))
+        _refresh_pending_orders()
         return True
-    logger.error("Order failed or no orderID: %s — will retry same trade on next poll (not marked seen)", resp)
-    return False
+    if response and (response.get("success") is False or response.get("status") == "rejected"):
+        journal.update(key, "rejected", response=response)
+        logger.warning("Order rejected; eligible for bounded retry")
+        return False
+    journal.update(key, "unknown", response=response or {"status": "unknown"})
+    send_alert("uncertain_order", f"Submission {key} has unknown outcome; automatic repost blocked")
+    return True
 
 
 def _fallback_partial_notional(my_notional: float) -> float:
@@ -303,6 +326,7 @@ def _try_partial_fallback_buy(
     title: str,
     outcome: str,
     context_label: str,
+    source_ids: list[str] | None = None,
 ) -> bool:
     rescue_notional = _fallback_partial_notional(my_notional)
     if rescue_notional <= 0:
@@ -323,6 +347,7 @@ def _try_partial_fallback_buy(
         worst_price,
         title,
         outcome=outcome,
+        source_ids=source_ids,
     )
 
 
@@ -350,12 +375,16 @@ def _pre_trade_allows(
     )
     if need_current_price:
         current = get_current_price(asset)
+    if need_current_price and current is None:
+        return False, "defer: live price unavailable"
     if side.upper() == "BUY":
         effective_price = current if current is not None else reference_price
         if effective_price >= MAX_BUY_PRICE:
             return False, f"buy price {effective_price:.4f} >= MAX_BUY_PRICE ({MAX_BUY_PRICE:.4f})"
         if MAX_SPREAD_FRACTION > 0:
             best_bid, best_ask = get_bid_ask_prices(asset)
+            if best_bid is None or best_ask is None:
+                return False, "defer: spread quote unavailable"
             if (
                 best_bid is not None
                 and best_ask is not None
@@ -409,7 +438,6 @@ def _maybe_reconcile_positions_on_start(my_value: float, target_value: float) ->
     if _startup_reconcile_done or not RECONCILE_ON_START or TEST_MODE:
         _startup_reconcile_done = True
         return
-    _startup_reconcile_done = True
     if not RECONCILE_SELL_ONLY:
         logger.warning("Startup reconcile is enabled, but buy-side reconciliation is not implemented; skipping")
         return
@@ -422,6 +450,7 @@ def _maybe_reconcile_positions_on_start(my_value: float, target_value: float) ->
         return
     target_positions = get_positions(TARGET_WALLET)
     my_positions = get_positions(FUNDER_ADDRESS)
+    _startup_reconcile_done = True
     if not my_positions:
         logger.info("Startup reconcile: no current positions to compare")
         return
@@ -485,9 +514,11 @@ def _maybe_reconcile_positions_on_start(my_value: float, target_value: float) ->
             continue
 
         worst_price = max(0.01, price * (1 - SELL_SLIPPAGE_FRACTION))
-        order_notional = excess_shares * worst_price
+        if journal.asset_pending(asset):
+            continue
+        order_notional = excess_shares * price
         skip_sell, have_shares, need_shares, sell_notional = _skip_sell_insufficient_shares(
-            asset, order_notional, worst_price
+            asset, order_notional, price
         )
         if skip_sell:
             logger.info(
@@ -499,18 +530,18 @@ def _maybe_reconcile_positions_on_start(my_value: float, target_value: float) ->
             continue
         if sell_notional <= 0:
             continue
-        if _is_dust_sell(sell_notional, worst_price):
+        if _is_dust_sell(sell_notional, price):
             logger.info(
                 "Startup reconcile: skip SELL dust remainder: $%.4f / %.6f shares | %s",
                 sell_notional,
-                sell_notional / worst_price if worst_price > 0 else 0.0,
+                sell_notional / price if price > 0 else 0.0,
                 (title or "Unknown")[:60],
             )
             continue
 
         logger.info(
             "Startup reconcile: SELL excess %.6f shares (market value ~$%.2f, order notional $%.2f) | desired %.6f, have %.6f | %s",
-            sell_notional / worst_price if worst_price > 0 else 0.0,
+            sell_notional / price if price > 0 else 0.0,
             excess_market_value,
             sell_notional,
             desired_shares,
@@ -526,6 +557,7 @@ def _maybe_reconcile_positions_on_start(my_value: float, target_value: float) ->
             title,
             outcome=outcome,
             order_type="FAK",
+            reference_price=price,
         ):
             reconcile_count += 1
 
@@ -537,6 +569,7 @@ def run_once() -> None:
     global _poll_count, _startup_window_initialized
     _poll_count += 1
 
+    _refresh_pending_orders()
     trades = _get_recent_trades()
 
     # Data API /value = mark-to-market of open positions only (0 if no positions).
@@ -556,6 +589,9 @@ def run_once() -> None:
         return
 
     _maybe_reconcile_positions_on_start(my_value, target_value)
+    if target_value <= 0:
+        logger.warning("Target position value is zero; deferring copies without consuming source trades")
+        return
 
     if not trades:
         # No trades at all: log balance only every N-th poll to avoid log spam
@@ -568,8 +604,12 @@ def run_once() -> None:
     # Collect unseen trades and group by asset (same market/token)
     unseen_by_asset: dict[str, list[dict]] = {}
     for trade in trades:
-        tx_hash = trade.get("transactionHash") or trade.get("transaction_hash")
+        tx_hash = trade_key(trade)
         if not tx_hash or is_already_seen(tx_hash):
+            continue
+        if not TEST_MODE and journal.source_handled(tx_hash):
+            # Recover a submission committed before the JSON seen-state update.
+            mark_seen(tx_hash)
             continue
         side = (trade.get("side") or "").upper()
         if side not in ("BUY", "SELL"):
@@ -589,10 +629,10 @@ def run_once() -> None:
 
     if STARTUP_MODE == "live_safe" and not _startup_window_initialized:
         boot_hashes = [
-            t.get("transactionHash") or t.get("transaction_hash")
+            trade_key(t)
             for group in unseen_by_asset.values()
             for t in group
-            if (t.get("transactionHash") or t.get("transaction_hash"))
+            if (trade_key(t))
         ]
         if boot_hashes:
             mark_seen_batch(boot_hashes)
@@ -619,10 +659,13 @@ def run_once() -> None:
         return
 
     for asset, group in unseen_by_asset.items():
+        if not TEST_MODE and journal.asset_pending(asset):
+            logger.info("Defer asset %s: prior order awaiting reconciliation", asset[:16])
+            continue
         if len(group) == 1:
             # Single trade: mirror as-is
             trade = group[0]
-            tx_hash = trade.get("transactionHash") or trade.get("transaction_hash")
+            tx_hash = trade_key(trade)
             side = (trade.get("side") or "").upper()
             size = float(trade.get("size", 0))
             price = float(trade.get("price", 0))
@@ -642,7 +685,7 @@ def run_once() -> None:
                 mark_seen(tx_hash)
                 continue
             if side == "BUY":
-                worst_price = min(0.99, price * (1 + SLIPPAGE_FRACTION))
+                worst_price = min(MAX_BUY_PRICE, price * (1 + SLIPPAGE_FRACTION) + min(0.05, 0.02 * get_failure_count(tx_hash)))
             else:
                 worst_price = max(0.01, price * (1 - SELL_SLIPPAGE_FRACTION))
             ok, reason = _pre_trade_allows(asset, side, price, trade)
@@ -653,7 +696,8 @@ def run_once() -> None:
                     side,
                     ((trade.get("title") or "").strip() or "Unknown")[:50],
                 )
-                mark_seen(tx_hash)
+                if not reason.startswith("defer:"):
+                    mark_seen(tx_hash)
                 continue
             if (
                 side == "SELL"
@@ -661,7 +705,7 @@ def run_once() -> None:
                 and REQUIRE_CLOB_BALANCE_FOR_SELL
             ):
                 skip_sell, have_shares, need_shares, sell_notional = _skip_sell_insufficient_shares(
-                    asset, my_notional, worst_price
+                    asset, my_notional, price
                 )
                 if skip_sell:
                     logger.info(
@@ -675,13 +719,13 @@ def run_once() -> None:
                     continue
                 if (
                     have_shares is not None
-                    and sell_notional + (SELL_SHARES_EPSILON * worst_price) < my_notional
+                    and sell_notional + (SELL_SHARES_EPSILON * price) < my_notional
                 ):
                     logger.info(
                         "Cap SELL mirror to held shares: have %.6f, need ~%.6f -> selling %.6f shares | %s | tx %s...",
                         have_shares,
                         need_shares,
-                        sell_notional / worst_price if worst_price > 0 else 0.0,
+                        sell_notional / price if price > 0 else 0.0,
                         ((trade.get("title") or "").strip() or "Unknown")[:50],
                         (tx_hash or "")[:14],
                     )
@@ -691,8 +735,8 @@ def run_once() -> None:
                         "Could not read CLOB balance for SELL; attempting order anyway | token=%s...",
                         asset[:16],
                     )
-                sell_shares = my_notional / worst_price if worst_price > 0 else 0.0
-                if _is_dust_sell(my_notional, worst_price):
+                sell_shares = my_notional / price if price > 0 else 0.0
+                if _is_dust_sell(my_notional, price):
                     logger.info(
                         "Skip SELL mirror (dust remainder): $%.4f / %.6f shares | %s | tx %s...",
                         my_notional,
@@ -710,6 +754,8 @@ def run_once() -> None:
                 worst_price,
                 trade.get("title", ""),
                 outcome=_normalize_outcome(trade),
+                reference_price=price,
+                source_ids=[tx_hash],
             ):
                 mark_seen(tx_hash)
             elif MAX_LIVE_ORDER_ATTEMPTS > 0 and note_live_order_failure(
@@ -723,6 +769,7 @@ def run_once() -> None:
                     trade.get("title", ""),
                     _normalize_outcome(trade),
                     "Single-trade",
+                    source_ids=[tx_hash],
                 ):
                     mark_seen(tx_hash)
                 else:
@@ -744,7 +791,7 @@ def run_once() -> None:
         group_hashes = [
             h
             for h in (
-                t.get("transactionHash") or t.get("transaction_hash") for t in group
+                trade_key(t) for t in group
             )
             if h
         ]
@@ -789,9 +836,10 @@ def run_once() -> None:
                     net_notional,
                     ((last_trade.get("title") or "").strip() or "Unknown")[:50],
                 )
-                mark_seen_batch(group_hashes)
+                if not reason.startswith("defer:"):
+                    mark_seen_batch(group_hashes)
                 continue
-            worst_price = min(0.99, last_price * (1 + SLIPPAGE_FRACTION))
+            worst_price = min(MAX_BUY_PRICE, last_price * (1 + SLIPPAGE_FRACTION) + min(0.05, 0.02 * max(get_failure_count(h) for h in group_hashes)))
             logger.info("Catch-up: net BUY notional=%.2f -> our notional=%.2f (one order)", net_notional, my_notional)
             if _place_one(
                 asset,
@@ -801,6 +849,8 @@ def run_once() -> None:
                 worst_price,
                 last_trade.get("title", ""),
                 outcome=_normalize_outcome(last_trade),
+                reference_price=ref_for_guard,
+                source_ids=group_hashes,
             ):
                 mark_seen_batch(group_hashes)
             elif MAX_LIVE_ORDER_ATTEMPTS > 0 and note_live_order_failure(
@@ -814,6 +864,7 @@ def run_once() -> None:
                     last_trade.get("title", ""),
                     _normalize_outcome(last_trade),
                     "Catch-up",
+                    source_ids=group_hashes,
                 ):
                     mark_seen_batch(group_hashes)
                 else:
@@ -839,6 +890,8 @@ def run_once() -> None:
             last_trade = group[-1]
             condition_id = last_trade.get("conditionId") or last_trade.get("condition_id")
             last_price = float(last_trade.get("price", 0.5))
+            total_shares = sum(float(t["size"]) for t in group)
+            ref_for_guard = net_notional / total_shares
             worst_price = max(0.01, last_price * (1 - SELL_SLIPPAGE_FRACTION))
             my_notional = compute_my_sell_notional(net_notional, my_value, target_value)
             if my_notional <= 0:
@@ -849,7 +902,7 @@ def run_once() -> None:
                 )
                 continue
             skip_sell, have_shares, need_shares, sell_notional = _skip_sell_insufficient_shares(
-                asset, my_notional, worst_price
+                asset, my_notional, ref_for_guard
             )
             if skip_sell:
                 mark_seen_batch(group_hashes)
@@ -862,18 +915,18 @@ def run_once() -> None:
                 continue
             if (
                 have_shares is not None
-                and sell_notional + (SELL_SHARES_EPSILON * worst_price) < my_notional
+                and sell_notional + (SELL_SHARES_EPSILON * ref_for_guard) < my_notional
             ):
                 logger.info(
                     "Catch-up: cap SELL to held shares: have %.6f, need ~%.6f -> selling %.6f shares | %s",
                     have_shares,
                     need_shares,
-                    sell_notional / worst_price if worst_price > 0 else 0.0,
+                    sell_notional / ref_for_guard,
                     ((last_trade.get("title") or "").strip() or "Unknown")[:50],
                 )
                 my_notional = sell_notional
-            sell_shares = my_notional / worst_price if worst_price > 0 else 0.0
-            if _is_dust_sell(my_notional, worst_price):
+            sell_shares = my_notional / ref_for_guard
+            if _is_dust_sell(my_notional, ref_for_guard):
                 mark_seen_batch(group_hashes)
                 logger.info(
                     "Catch-up: skip SELL dust remainder: $%.4f / %.6f shares | %s",
@@ -891,6 +944,8 @@ def run_once() -> None:
                 worst_price,
                 last_trade.get("title", ""),
                 outcome=_normalize_outcome(last_trade),
+                reference_price=ref_for_guard,
+                source_ids=group_hashes,
             ):
                 mark_seen_batch(group_hashes)
             elif MAX_LIVE_ORDER_ATTEMPTS > 0 and note_live_order_failure(
@@ -909,6 +964,13 @@ def run_once() -> None:
 
 
 def main() -> None:
+    # A second local process must not post against the same state/journal.
+    os.makedirs(os.path.join(os.path.dirname(__file__), "state"), exist_ok=True)
+    lock = open(os.path.join(os.path.dirname(__file__), "state", "bot.lock"), "a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit("Another bot process is already running in this checkout")
     errors = validate_config()
     if errors:
         for e in errors:

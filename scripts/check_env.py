@@ -31,6 +31,8 @@ def main() -> int:
     print(f"RECENT_WINDOW: {config.RECENT_TRADES_PAGE_SIZE} x {config.RECENT_TRADES_MAX_PAGES}")
     print(f"STARTUP_MODE: {config.STARTUP_MODE}")
     print(f"TEST_MODE: {config.TEST_MODE}")
+    print(f"COPY_ORDER_TYPE: {config.COPY_ORDER_TYPE}")
+    print(f"RECONCILE_ON_START: {config.RECONCILE_ON_START}")
     print(f"SIGNATURE_TYPE: {config.SIGNATURE_TYPE}")
 
     if config.SIGNATURE_TYPE == 2:

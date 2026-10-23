@@ -1,133 +1,123 @@
-"""Execution-layer tests for retry pricing behavior."""
-
+"""Order quantities, API response parsing and ambiguous submission handling."""
 from types import SimpleNamespace
-
+import pytest
 import executor
 
 
-class DummyMarketOrderArgs:
-    def __init__(self, token_id, amount, side, price, order_type):
-        self.token_id = token_id
-        self.amount = amount
-        self.side = side
-        self.price = price
-        self.order_type = order_type
+@pytest.fixture
+def client(monkeypatch):
+    class Client:
+        def __init__(self):
+            self.posts = []
+            self.response = {"orderID": "order", "status": "matched", "tradeIDs": ["fill"]}
+            self.error = None
+        def create_market_order(self, args, options=None):
+            return args
+        def post_order(self, args, kind):
+            self.posts.append((args, kind))
+            if self.error:
+                raise self.error
+            return self.response
+        def get_midpoint(self, token):
+            return {"mid": "0.5"}
+        def get_price(self, token, side):
+            return {"price": "0.49" if side == "BUY" else "0.51"}
+    fake = Client()
+    monkeypatch.setattr(executor, "get_client", lambda: fake)
+    monkeypatch.setattr(executor, "get_market_options", lambda *a: SimpleNamespace(tick_size="0.01"))
+    return fake
 
 
-class FakeClient:
-    def __init__(self, failures_before_success=0):
-        self.failures_before_success = failures_before_success
-        self.create_prices = []
-
-    def create_market_order(self, order_args, options=None):
-        self.create_prices.append(order_args.price)
-        return order_args
-
-    def post_order(self, signed, order_type):
-        if len(self.create_prices) <= self.failures_before_success:
-            raise RuntimeError("order couldn't be fully filled")
-        return {"orderID": "abc", "status": "matched"}
+def test_quotes_unpack_json_and_use_documented_book_sides(client):
+    assert executor.get_current_price("token") == 0.5
+    assert executor.get_bid_ask_prices("token") == (0.49, 0.51)
 
 
-class FakeV2Client:
-    def __init__(self):
-        self.calls = []
-
-    def create_and_post_market_order(self, order_args, options=None, order_type=None):
-        self.calls.append(
-            {
-                "token_id": order_args.token_id,
-                "amount": order_args.amount,
-                "side": order_args.side,
-                "price": order_args.price,
-                "order_type": order_args.order_type,
-                "post_order_type": order_type,
-            }
-        )
-        return {"orderID": "v2", "status": "matched"}
+def test_sell_quantity_does_not_depend_on_price_floor(client):
+    executor.place_market_order("token", "condition", "SELL", 5, 0.01, shares=10)
+    args, kind = client.posts[0]
+    assert args.amount == 10
+    assert args.price == 0.01
+    assert kind == "FAK"
 
 
-def test_buy_retries_widen_price(monkeypatch):
-    fake_client = FakeClient(failures_before_success=2)
-    monkeypatch.setattr(executor, "_require_client_lib", lambda: None)
-    monkeypatch.setattr(executor, "get_market_options", lambda condition_id, token_id: None)
-    monkeypatch.setattr(executor, "get_client", lambda: fake_client)
-    monkeypatch.setattr(executor, "MarketOrderArgs", DummyMarketOrderArgs)
-    monkeypatch.setattr(executor, "OrderType", SimpleNamespace(FOK="FOK"))
-    monkeypatch.setattr(executor, "BUY", "BUY")
-    monkeypatch.setattr(executor, "SELL", "SELL")
-    monkeypatch.setattr(executor.time, "sleep", lambda _: None)
-
-    resp = executor.place_market_order("tok", "cond", "BUY", 5.0, 0.714)
-
-    assert resp == {"orderID": "abc", "status": "matched"}
-    assert fake_client.create_prices == [0.714, 0.734, 0.754]
+def test_sell_requires_shares(client):
+    with pytest.raises(ValueError, match="explicit"):
+        executor.place_market_order("token", "condition", "SELL", 5, 0.01)
+    assert not client.posts
 
 
-def test_sell_retry_keeps_same_price(monkeypatch):
-    fake_client = FakeClient(failures_before_success=1)
-    monkeypatch.setattr(executor, "_require_client_lib", lambda: None)
-    monkeypatch.setattr(executor, "get_market_options", lambda condition_id, token_id: None)
-    monkeypatch.setattr(executor, "get_client", lambda: fake_client)
-    monkeypatch.setattr(executor, "MarketOrderArgs", DummyMarketOrderArgs)
-    monkeypatch.setattr(executor, "OrderType", SimpleNamespace(FOK="FOK"))
-    monkeypatch.setattr(executor, "BUY", "BUY")
-    monkeypatch.setattr(executor, "SELL", "SELL")
-    monkeypatch.setattr(executor.time, "sleep", lambda _: None)
-
-    resp = executor.place_market_order("tok", "cond", "SELL", 5.0, 0.5)
-
-    assert resp == {"orderID": "abc", "status": "matched"}
-    assert fake_client.create_prices == [0.5, 0.5]
+def test_buy_price_is_rounded_inside_cap_and_budget_includes_fees(client):
+    executor.place_market_order("token", "condition", "BUY", 5, 0.714)
+    args, kind = client.posts[0]
+    assert args.price == 0.71
+    assert args.amount == 5
+    assert args.user_usdc_balance == 5
 
 
-def test_v2_client_path_uses_create_and_post(monkeypatch):
-    fake_client = FakeV2Client()
-    monkeypatch.setattr(executor, "_require_client_lib", lambda: None)
-    monkeypatch.setattr(executor, "get_market_options", lambda condition_id, token_id: None)
-    monkeypatch.setattr(executor, "get_client", lambda: fake_client)
-    monkeypatch.setattr(executor, "MarketOrderArgs", DummyMarketOrderArgs)
-    monkeypatch.setattr(executor, "OrderType", SimpleNamespace(FOK="FOK"))
-    monkeypatch.setattr(executor, "BUY", "BUY")
-    monkeypatch.setattr(executor, "SELL", "SELL")
-    monkeypatch.setattr(executor, "USING_CLOB_V2", True)
-
-    resp = executor.place_market_order("tok", "cond", "BUY", 5.0, 0.714)
-
-    assert resp == {"orderID": "v2", "status": "matched"}
-    assert fake_client.calls == [
-        {
-            "token_id": "tok",
-            "amount": 5.0,
-            "side": "BUY",
-            "price": 0.714,
-            "order_type": "FOK",
-            "post_order_type": "FOK",
-        }
-    ]
+def test_timeout_is_not_retried(client):
+    client.error = TimeoutError()
+    result = executor.place_market_order("token", "condition", "BUY", 5, 0.5)
+    assert result["status"] == "unknown"
+    assert len(client.posts) == 1
 
 
-def test_v2_client_path_honors_custom_order_type(monkeypatch):
-    fake_client = FakeV2Client()
-    monkeypatch.setattr(executor, "_require_client_lib", lambda: None)
-    monkeypatch.setattr(executor, "get_market_options", lambda condition_id, token_id: None)
-    monkeypatch.setattr(executor, "get_client", lambda: fake_client)
-    monkeypatch.setattr(executor, "MarketOrderArgs", DummyMarketOrderArgs)
-    monkeypatch.setattr(executor, "OrderType", SimpleNamespace(FOK="FOK", FAK="FAK"))
-    monkeypatch.setattr(executor, "BUY", "BUY")
-    monkeypatch.setattr(executor, "SELL", "SELL")
-    monkeypatch.setattr(executor, "USING_CLOB_V2", True)
+def test_definitive_rejection_is_distinct_from_unknown(client):
+    class Rejected(Exception):
+        status_code = 400
+    client.error = Rejected()
+    assert executor.place_market_order("token", "condition", "BUY", 5, 0.5)["success"] is False
 
-    resp = executor.place_market_order("tok", "cond", "SELL", 2.5, 0.25, order_type="FAK")
 
-    assert resp == {"orderID": "v2", "status": "matched"}
-    assert fake_client.calls == [
-        {
-            "token_id": "tok",
-            "amount": 10.0,
-            "side": "SELL",
-            "price": 0.25,
-            "order_type": "FAK",
-            "post_order_type": "FAK",
-        }
-    ]
+def test_confirmed_partial_fill_uses_actual_quantities(client):
+    client.get_order = lambda order: {"status": "MATCHED", "size_matched": "3", "associate_trades": ["fill"]}
+    client.get_trades = lambda params: [{"id": "fill", "status": "CONFIRMED", "taker_order_id": "order",
+                                       "size": "3", "price": "0.48", "transaction_hash": "0xtx"}]
+    status, fills = executor.get_order_execution("order", {})
+    assert status == "filled"
+    assert fills[0]["shares"] == 3
+    assert fills[0]["notional_usd"] == pytest.approx(1.44)
+
+
+def test_matched_but_unsettled_is_pending(client):
+    client.get_order = lambda order: {"status": "MATCHED", "size_matched": "3", "associate_trades": ["fill"]}
+    client.get_trades = lambda params: [{"id": "fill", "status": "MINED"}]
+    assert executor.get_order_execution("order", {}) == ("pending", [])
+
+
+def test_maker_fill_uses_our_order_amount_not_total_trade(client):
+    client.get_order = lambda order: {"status": "MATCHED", "size_matched": "2", "associate_trades": ["fill"]}
+    client.get_trades = lambda params: [{"id": "fill", "status": "CONFIRMED", "size": "100", "price": "0.5",
+        "maker_orders": [{"order_id": "order", "matched_amount": "2", "price": "0.51"}]}]
+    status, fills = executor.get_order_execution("order", {})
+    assert status == "filled"
+    assert fills[0]["shares"] == 2
+    assert fills[0]["price"] == 0.51
+
+
+def test_pinned_sdk_signs_actual_order_with_explicit_sell_shares(monkeypatch):
+    """Exercise the real SDK builder/signature and serialized side, without HTTP."""
+    import base64
+    from py_clob_client_v2 import ApiCreds, ClobClient
+    sdk = ClobClient("https://clob.invalid", chain_id=137, key="0x" + "a" * 64,
+                     creds=ApiCreds(api_key="test", api_secret=base64.b64encode(b"test").decode(),
+                                    api_passphrase="test"), signature_type=0, retry_on_error=False)
+    def get(url, **kwargs):
+        if "/clob-markets/" in url:
+            return {"mts": "0.01", "nr": False, "t": [{"t": "123"}], "fd": {"r": 0, "e": 1}}
+        if url.endswith("/version"):
+            return {"version": 2}
+        raise AssertionError(f"Unexpected SDK read: {url}")
+    posts = []
+    def post(url, **kwargs):
+        import json
+        posts.append(json.loads(kwargs["data"]))
+        return {"orderID": "order", "status": "delayed", "tradeIDs": []}
+    monkeypatch.setattr(sdk, "_get", get)
+    monkeypatch.setattr(sdk, "_post", post)
+    monkeypatch.setattr(executor, "get_client", lambda: sdk)
+    result = executor.place_market_order("123", "condition", "SELL", 5, 0.01, shares=10)
+    assert result["orderID"] == "order"
+    assert posts[0]["order"]["makerAmount"] == "10000000"
+    assert posts[0]["order"]["takerAmount"] == "100000"
+    assert posts[0]["orderType"] == "FAK"

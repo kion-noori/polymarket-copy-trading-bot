@@ -6,3 +6,5 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+# Source checkpoint archives; keep commits/manifests in project history instead of binaries.
+checkpoints/

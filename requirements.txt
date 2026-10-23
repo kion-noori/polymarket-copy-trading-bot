@@ -1,5 +1,5 @@
 # Polymarket CLOB V2 cut over on April 28, 2026. The legacy py-clob-client package
 # no longer places valid live orders against production after that migration.
-py-clob-client-v2>=1.0.0,<2
+py-clob-client-v2==1.2.1
 python-dotenv>=1.0.0,<2
 requests>=2.28.0,<3
