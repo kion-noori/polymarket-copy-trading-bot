@@ -4,6 +4,8 @@
 
 Improve copying fidelity and diagnose the gap versus the target trader. The operator approved implementation and agent-managed VPS deployment, then enrolled an SSH public key. Deployment completed on October 22, 2026 at 9:18 PM Eastern. No higher percentage cap, higher minimum buy, automatic portfolio top-up, or automatic redemption has been enabled.
 
+The operator requests that completed code and documentation changes be committed and pushed to GitHub. Credentials, raw trading logs and live state remain private. See [historical log review](HISTORICAL_REVIEW.md) for the April–October forensic findings: actual insufficient BUY balance, no-share SELL skips consistent with manual exits, historical execution bugs, and a newly identified Combo compatibility gap. This review did not change the live trading rules.
+
 ## Implemented and deployed
 
 - Data API v2 envelope, field normalization, cursor walks, explicit `taker_only=false`, rate-limit retries, and complete position snapshots.
@@ -28,7 +30,7 @@ The consistent pre-deployment backup is `/root/polymarket-deploy/checkpoints/bef
 
 The local `.env` was observed with `TEST_MODE=1` and `POLL_INTERVAL_SEC=45`; it is not the production configuration and was not changed. The server's present configuration must be read before deployment.
 
-Polymarket's current Data API migration guide announces v1 retirement on **October 24, 2026**. Prioritize deploying the tested read-path migration after review.
+Polymarket's current Data API migration guide announces v1 retirement on **October 24, 2026**. The tested read-path migration is deployed.
 
 ## Known limits and next evaluation
 
@@ -40,6 +42,7 @@ Polymarket's current Data API migration guide announces v1 retirement on **Octob
 - FAK partials and zero fills are terminal for the source group. Residual quantities are measured, not blindly resubmitted.
 - Pending fills block subsequent activity in that asset until settled. Read failures do not release the block.
 - Old trade CSVs describe intentions and cannot establish actual historical executions.
+- Combined-market trades are not handled by a dedicated Combo RFQ executor. Historical `market not found` errors overwhelmingly followed titles containing `AND`; investigate market-type and valuation coverage before claiming full target coverage.
 - A read-only report can measure account activity now, but exact bot attribution starts with the new journal. Manual profit-taking cannot be inferred from public trades.
 - No tests place live orders. Server readiness, quote/book consistency and an existing confirmed-trade parse are verified. Fresh post-deployment BUY and SELL executions have both reached confirmed status.
 

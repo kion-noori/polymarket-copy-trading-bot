@@ -56,14 +56,16 @@ The active code is a versioned release in `/root/polymarket-deploy/releases/dfc8
 
 The agent can now stage, validate and deploy future releases over SSH. See [checkpoint notes](CHECKPOINTS.md) before rollback. Preserve current shared state and pending-order history; do not restore an old processed-trades snapshot after live fills.
 
+The operator requests that completed code and documentation changes be committed and pushed to GitHub. Keep credentials, live state, raw logs and private diagnostic reports out of Git. Record deployments and recovery checkpoints in the project notes. SSH access supports direct agent deployment; it does not itself authorize new trading policies or bulk liquidation.
+
 ## Useful Interpretation Notes
 
 - `me=$...` in logs is the bot/operator bankroll snapshot.
 - `target=$...` in logs is the copied wallet's portfolio value used for sizing.
-- `Skip SELL mirror (no CLOB position)` is expected when the target exits a market you never entered.
-- `Cap SELL mirror to held shares` means the target sold more than your remaining position size, so the bot trimmed the exit to what you actually still held.
+- `Skip SELL mirror (no CLOB position)` means the account currently has no matching shares. A manual exit, an earlier bot exit, or never entering the market can explain it.
+- `Cap SELL mirror to held shares` means the requested copy size exceeded the remaining shares. Historical messages can also reflect the old quantity calculation bug; see [historical review](HISTORICAL_REVIEW.md).
 - `Skip SELL mirror (dust remainder)` means the bot found only a tiny leftover position after manual or partial exits and intentionally skipped posting an invalid microscopic order.
-- `place_market_order attempt ... failed at price ...` on BUYs means the bot is retrying with a looser price cap because the first immediate-fill order could not be fully filled.
+- Historical `place_market_order attempt ... failed at price ...` messages describe retries. Read the actual error: insufficient balance, incompatible tick size, unavailable markets and liquidity failures require different explanations. The October release retries definitive rejections on later polls.
 - If the laptop sleeps or disconnects, the `journalctl` stream stops locally, but the bot should continue running under `systemd`.
 
 ## Live Safety Reminders
