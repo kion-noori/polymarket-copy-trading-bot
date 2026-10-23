@@ -1,6 +1,6 @@
 # Ops Notes
 
-Short operational cheat sheet for the live VPS deployment.
+Short operational cheat sheet for the live VPS deployment. New conversations should start with the [session handoff](SESSION_HANDOFF.md). Paths and settings below reflect the October 23 recorded deployment; inspect the actual service before making changes.
 
 ## Connect
 
@@ -39,16 +39,20 @@ cd /root/polymarket-deploy/releases/2a65e3e
 ## Environment / Readiness Checks
 
 ```bash
-python3 scripts/check_env.py
+.venv/bin/python scripts/check_env.py
 .venv/bin/python scripts/check_live_ready.py
 ```
 
 ## Edit Config
 
+The agent can manage settings over SSH. Preserve the server's existing credentials. The active override is `/etc/systemd/system/polymarket-bot.service.d/90-release.conf`; its `Environment=` values take precedence over the shared `.env`. Editing only `.env` will not change an overridden bot setting. Keep settings used by the separate health process consistent in `.env` as well.
+
 ```bash
 nano /root/polymarket-copy-trading-bot/.env
 systemctl restart polymarket-bot
 ```
+
+If changing the systemd override, run `systemctl daemon-reload` before restarting. Follow the [checkpoint procedure](CHECKPOINTS.md) before live changes, then verify the process settings and health report.
 
 ## Updates and rollback
 
@@ -60,7 +64,7 @@ The operator requests that completed code and documentation changes be committed
 
 ## Useful Interpretation Notes
 
-The live [cash, manual-exit and coverage controls](COPY_CONTROLS.md) include a status/resume CLI and an enabled five-minute health timer. See the [iteration checklist](ITERATION_CHECKLIST.md) for validation and remaining market-dependent observation. Inspect `logs/health_latest.json`, `systemctl status polymarket-bot-health.timer` and the status CLI for current evidence.
+The live [cash, manual-exit and coverage controls](COPY_CONTROLS.md) include a status/resume CLI and an enabled five-minute health timer. The [iteration checklist](ITERATION_CHECKLIST.md) is complete, including natural filled BUYs. Automatic external-sale pauses are disabled; a later eligible target BUY can reopen a manually sold asset. Explicit CLI pauses remain available. Inspect `logs/health_latest.json`, `systemctl status polymarket-bot-health.timer` and the status CLI for current evidence.
 
 - `me=$...` in logs is the bot/operator bankroll snapshot.
 - `target=$...` in logs is the copied wallet's portfolio value used for sizing.
@@ -100,7 +104,7 @@ ssh root@216.238.91.62
 Then, **on the server**:
 
 ```bash
-cd /root/polymarket-deploy/releases/dfc8cf0
+cd /root/polymarket-deploy/releases/2a65e3e
 .venv/bin/python scripts/review_performance.py --days 7
 cat logs/performance_review.md
 ```
@@ -135,7 +139,7 @@ This releases the asset block without automatically replaying the original targe
 
 ## Deployment review checklist
 
-Before any restart/update, capture current service status, service interpreter path, server git revision, nonsecret config, and current holdings. The last recorded server path is `/root/polymarket-copy-trading-bot/.venv/bin/python`.
+Before any restart/update, capture current service status, service interpreter path, deployed source revision, nonsecret config and current holdings. The last recorded service interpreter is `/root/polymarket-deploy/releases/2a65e3e/.venv/bin/python`. Inspect `systemctl show polymarket-bot -p WorkingDirectory -p ExecStart` and `/root/polymarket-deploy/deployment.json`; the original checkout's Git revision does not identify the active release.
 
 Stop the service before backing up state and updating code. Preserve `.env`, the full `state/` directory, and logs. Install `requirements.txt` using the exact service interpreter, run the readiness checker, then validate submitted and confirmed fills separately after a controlled restart. Review `RECONCILE_ON_START` before restarting because it can submit sales immediately.
 
@@ -143,13 +147,14 @@ Keep backups on the server; never commit credentials. Running two copies against
 
 ## Effective settings after deployment
 
-The systemd override sets `POLL_INTERVAL_SEC=5`, `COPY_ORDER_TYPE=FAK`, and `RECONCILE_ON_START=0`. These take precedence over the shared original `.env`. The original credentials, 10% sizing cap and $5 desired minimum remain unchanged. Bulk reconciliation needs a separate holdings review; ordinary new target SELLs are still copied.
+The systemd override sets `POLL_INTERVAL_SEC=5`, `COPY_ORDER_TYPE=FAK`, `RECONCILE_ON_START=0`, `CASH_RESERVE_FRACTION=0`, `CASH_RESERVE_USD=0`, `CASH_DEFERRAL_SEC=300` and `MANUAL_EXIT_PROTECTION=0`. These take precedence over the shared original `.env`. The shared `.env` also sets manual-exit protection to zero for CLI/health consistency. The original credentials, 10% sizing cap and $5 desired minimum remain unchanged. Bulk reconciliation stays off after a read-only holdings/book review; activation remains a separate policy decision. Ordinary new target SELLs are still copied.
 
 Server-only deployment records and consistent backup:
 
 ```text
 /root/polymarket-deploy/deployment.json
-/root/polymarket-deploy/checkpoints/before-20261023T011809Z
+/root/polymarket-deploy/checkpoints/before-reentry-policy-20261023T044528Z
+/root/polymarket-deploy/checkpoints/api-v2-controls-validated-2a65e3e-no-external-pauses
 ```
 
-The backup contains credentials: keep it on the server and out of Git. Both old and new virtual environments are retained.
+The private backup contains credentials: keep it on the server and out of Git. The recovery bundle retains source/configuration; it must not overwrite current processed IDs, order history or controls state. Both old and new virtual environments are retained. Earlier deployment checkpoints remain documented in [CHECKPOINTS.md](CHECKPOINTS.md).

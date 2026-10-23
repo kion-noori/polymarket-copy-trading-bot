@@ -56,9 +56,9 @@ Polymarket's current Data API migration guide announces v1 retirement on **Octob
 
 ## Re-entry workflow
 
-Read this file, README, deployment notes, and ops notes. Inspect `git status`. Review the recorded local validation and generated report if available. Obtain current server status/configuration without restarting the service before making deployment decisions.
+Start with [SESSION_HANDOFF.md](SESSION_HANDOFF.md), then read this file, README, deployment notes and ops notes. Inspect `git status` and recent commits. Review the recorded local validation and generated report if available. Obtain current server status/configuration without restarting the service before making deployment decisions. The current iteration checklist is complete; the next evaluation is confirmed-fill and reason-specific skip/rejection measurement over a useful window, accounting for deposits and manual activity.
 
-## Local validation and measured baseline
+## Historical migration validation and measured baseline
 
 - 73 offline tests passed with the repository's dependency constraints in a fresh Python 3.13 virtual environment. The original laptop `.venv` is an incompatible CPU build and was not replaced.
 - Tests include real signing/serialization with the pinned SDK and a fake HTTP transport, as well as recovery after a committed order whose processed-state update was interrupted.
@@ -71,11 +71,11 @@ Read this file, README, deployment notes, and ops notes. Inspect `git status`. R
 
 The initial SSH key enrollment failed before installing the key. Password-only `ssh-copy-id` succeeded, and unattended SSH was verified. The agent inspected, backed up, and deployed the VPS. No additional terminal setup is currently needed.
 
-A verified source-only checkpoint of the prior `2cdc997` revision is saved under `checkpoints/pre-upgrade-2026-10-22/`. The checkpoint tool and its tests are included in the upcoming committed revision. See [CHECKPOINTS.md](CHECKPOINTS.md) for the release and rollback procedure. Current local validation: 77 offline tests pass.
+A verified source-only checkpoint of the prior `2cdc997` revision is saved under `checkpoints/pre-upgrade-2026-10-22/`. The checkpoint tool and its tests are committed and pushed. See [CHECKPOINTS.md](CHECKPOINTS.md) for the release and rollback procedure. The initial API v2 candidate passed 77 offline tests; the current local suite passes 106.
 
 Cash availability is an alternative explanation for missed BUYs. Fully deployed funds can prevent entries even when the feed is complete. The 19% figure measures old feed visibility only; it does not attribute the account's underperformance. Inspect live-server balance/allowance failures and exit history before attributing the gap to one cause. Missing SELLs of held shares require a separate explanation from a lack of buying cash.
 
-## October 22 deployment verification
+## Historical October 22 API v2 deployment verification
 
 - All 77 tests and dependency checks passed in the VPS's native Python 3.11 environment before activation.
 - Authenticated API credentials and collateral reads passed; cash was approximately $547 during staging, subsequently $561 in live logs.
@@ -85,4 +85,4 @@ Cash availability is an alternative explanation for missed BUYs. Fully deployed 
 - The new process is active with no observed restarts or poll-cycle errors. Fresh target activity subsequently produced a confirmed SELL and a confirmed BUY. The BUY succeeded on a later poll after an initial liquidity rejection. No extra test trade was forced.
 - Preserve the original shared `.env`, current processed state and current SQLite order journal. Do not use an old JSON state backup to replay live orders.
 
-The server's validated compatible checkpoint is `/root/polymarket-deploy/checkpoints/api-v2-validated-dfc8cf0`. It retains the verified source archive and deployment manifest; the release's native environment remains installed. Both BUY and SELL execution confirmations establish this as the recovery baseline for future compatible code updates.
+The API v2 migration's validated checkpoint was `/root/polymarket-deploy/checkpoints/api-v2-validated-dfc8cf0`, with confirmed BUY and SELL executions. It remains retained with its native environment, but predates the cash/manual controls. The current recovery baseline is the `2a65e3e-no-external-pauses` bundle described above and in [CHECKPOINTS.md](CHECKPOINTS.md).

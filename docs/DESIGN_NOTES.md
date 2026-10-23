@@ -16,6 +16,14 @@ SELL shares equal the proportional sale notional divided by its target reference
 
 Startup reconciliation is optional, sell-only and one-time. It compares complete current position snapshots, values excess shares at reference prices for dust checks, and posts explicit share quantities using FAK. It does not buy missing positions or guarantee portfolio synchronization.
 
+## Cash, manual sales and unsupported markets
+
+BUY affordability uses a fresh collateral read minus active/unknown BUY budgets, with a remaining budget tracked within each polling cycle. Configurable fixed reserves are zero under the current policy. Cash/quote/pending/activity deferrals have durable five-minute deadlines; later funding does not replay an expired source.
+
+The optional external-sale observer attributes settled sales using transaction, asset and quantity against journaled bot fills. It is disabled under the operator's current policy (`MANUAL_EXIT_PROTECTION=0`), so a manual sale does not create a BUY pause or make later BUYs depend on account-activity reads. A fresh eligible target BUY can reopen the asset. Explicit CLI pauses remain supported and are honored independently of the observer flag. See [control behavior](COPY_CONTROLS.md).
+
+Structured Combo detection prevents routing identified unsupported Combo signals into ordinary CLOB submission. Dedicated RFQ execution is not implemented. The Data API's total position value includes unresolved Combo cost basis, so it is not wholly marked-to-market NAV; the account review reports Combo holdings separately without adding their basis twice. Title text alone is not sufficient to classify a market.
+
 ## Execution state
 
 Before a POST, SQLite commits a submission intent. Only a definitive rejection permits another attempt. A timeout or interrupted submission without an exchange order ID remains blocked until the operator checks exchange history. Pending orders block the asset, not unrelated markets.
@@ -24,7 +32,7 @@ Returned order IDs reserve source groups but do not constitute completed fills. 
 
 FAK partials are accepted and the unfilled remainder is canceled. No full-notional repost follows a partial fill. FOK remains configurable. Definitive rejections can retry on later polls with bounded price widening; no synchronous multi-POST retry loop delays every other asset.
 
-SQLite is the authoritative execution ledger. CSV is an idempotent export, so a failed export cannot justify replaying an order. Preserve both JSON processed state and SQLite across updates. Test-mode state is separate. A local file lock prevents two processes in one checkout; running separate copies against one account is unsupported.
+SQLite is the authoritative execution ledger. CSV is an idempotent export, so a failed export cannot justify replaying an order. Preserve JSON processed state, `orders.sqlite3` and `controls.sqlite3` across updates. Controls store durable decisions, deferral deadlines, sale attribution and explicit asset pauses. Test-mode state is separate. A local file lock prevents two processes in one checkout; running separate copies against one account is unsupported.
 
 ## Performance interpretation
 

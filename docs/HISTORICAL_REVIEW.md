@@ -82,4 +82,4 @@ The October deployment preview identified 154 candidate sales with about $808 of
 3. Decide how manual profit-taking should interact with later bot activity, including whether a manual exit should pause further buys of that asset.
 4. Assess the deployed fixes using confirmed fills and reason-specific skip/rejection counts. Historical logs cannot reconstruct an exact bot-only percentage return.
 
-No live strategy, risk limit or bulk-liquidation setting was changed during this forensic review. A final service read showed active/running with zero process restarts and three filled journal entries. The current release remains `dfc8cf0`.
+No live strategy, risk limit or bulk-liquidation setting was changed during this forensic review. At the end of that review, the service was active/running with zero process restarts and three filled journal entries; the then-live release was `dfc8cf0`. Subsequent authorized changes deployed cash controls and disabled automatic external-sale pauses. See [project status](PROJECT_STATUS.md) and the [session handoff](SESSION_HANDOFF.md) for the current recorded deployment and decisions.
