@@ -33,7 +33,7 @@ journalctl -u polymarket-bot --since "1 hour ago"
 ## Project Paths
 
 ```bash
-cd /root/polymarket-deploy/releases/dfc8cf0
+cd /root/polymarket-deploy/releases/2a65e3e
 ```
 
 ## Environment / Readiness Checks
@@ -52,7 +52,7 @@ systemctl restart polymarket-bot
 
 ## Updates and rollback
 
-The active code is a versioned release in `/root/polymarket-deploy/releases/dfc8cf0`, selected by a systemd override. The original Git checkout is retained and is not the running code path. A `git pull` in that old checkout will not update the service.
+The active code is a versioned release in `/root/polymarket-deploy/releases/2a65e3e`, selected by a systemd override. The original Git checkout is retained and is not the running code path. A `git pull` in that old checkout will not update the service.
 
 The agent can now stage, validate and deploy future releases over SSH. See [checkpoint notes](CHECKPOINTS.md) before rollback. Preserve current shared state and pending-order history; do not restore an old processed-trades snapshot after live fills.
 
@@ -60,7 +60,7 @@ The operator requests that completed code and documentation changes be committed
 
 ## Useful Interpretation Notes
 
-The next iteration's [cash, manual-exit and coverage controls](COPY_CONTROLS.md) include a status/resume CLI and a five-minute health timer example. Before switching to it, check the [iteration checklist](ITERATION_CHECKLIST.md) for staging and activation status. A staged release is not a running release.
+The live [cash, manual-exit and coverage controls](COPY_CONTROLS.md) include a status/resume CLI and an enabled five-minute health timer. See the [iteration checklist](ITERATION_CHECKLIST.md) for validation and remaining market-dependent observation. Inspect `logs/health_latest.json`, `systemctl status polymarket-bot-health.timer` and the status CLI for current evidence.
 
 - `me=$...` in logs is the bot/operator bankroll snapshot.
 - `target=$...` in logs is the copied wallet's portfolio value used for sizing.
@@ -85,7 +85,7 @@ curl -s https://polymarket.com/api/geoblock
 
 ## October 2026 update
 
-Release `dfc8cf0` is deployed and key-based SSH works. See [project status](PROJECT_STATUS.md). Data API v1 is scheduled to retire October 24, 2026.
+Release `2a65e3e` is deployed and key-based SSH works. See [project status](PROJECT_STATUS.md). Data API v1 is scheduled to retire October 24, 2026.
 
 Do not copy the laptop `.env` to the server. The laptop was last observed in test mode with a 45-second override. Server credentials/settings must be inspected and retained separately. The new code default is five seconds, but an existing override wins.
 

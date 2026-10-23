@@ -1,6 +1,6 @@
 # Cash, manual exits and copy coverage
 
-## Proposed activation settings
+## Approved live settings
 
 - No fixed reserve: `CASH_RESERVE_FRACTION=0`, `CASH_RESERVE_USD=0`. There is no measured evidence that a fixed 10% reserve improves returns. The reserve remains configurable for a later evidence-based decision.
 - A BUY must fit both a fresh cash read minus active BUY budgets and the remaining budget in the current polling cycle. Pending or unknown orders reserve their full requested budget. This can temporarily underestimate cash; it avoids reusing unsettled funds.
@@ -8,7 +8,7 @@
 - With `MANUAL_EXIT_PROTECTION=true`, a newly observed external settled sale pauses new BUYs of that exact asset until resumed. Partial manual sales also trigger a pause. Normal SELLs remain active. Already skipped BUYs are not replayed on resume.
 - Bulk startup cleanup remains disabled. Review proposals do not authorize or submit sales.
 
-The operator requested explicit confirmation of the cash/manual-exit choices before activation. Implementation and isolated staging can proceed while that confirmation is pending. Record approval and effective server settings in deployment notes.
+The operator explicitly approved these settings and deployment. Release `2a65e3e` activated October 22 at 10:38 PM Eastern; process-level overrides, successful polling and the health timer were verified. See deployment notes for the private checkpoint and manifest.
 
 ## Manual attribution and limits
 
@@ -52,4 +52,4 @@ The status command reports source/reason counts separately from repeated observa
 
 The target's cash is unknown; existing sizing uses target position value. The $5 BUY floor alters proportional weights and remains unchanged. The 10% single-order cap and price guards remain unchanged. This is not full portfolio mirroring. Recent source polling is bounded; historical replay, automatic top-up purchases after funding, automatic redemption and bulk liquidation remain separate decisions. No fixed cash policy or execution change has been proven to improve investment returns.
 
-Rollback must preserve the latest controls database as well as the processed IDs and order journal. The earlier `dfc8cf0` release does not enforce these new controls; inspect active pauses before considering that code as a fallback. Once validated, this release becomes the compatible baseline for subsequent control-preserving rollbacks.
+Rollback must preserve the latest controls database as well as the processed IDs and order journal. The earlier `dfc8cf0` release does not enforce these new controls; inspect active pauses before considering that code as a fallback. The validated `2a65e3e` recovery checkpoint is the baseline for subsequent control-preserving rollbacks; see checkpoint notes for its path.

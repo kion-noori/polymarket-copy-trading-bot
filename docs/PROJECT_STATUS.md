@@ -1,8 +1,10 @@
 # Project status — October 22, 2026
 
-## Next iteration prepared
+## Current live iteration
 
-The operator authorized all follow-up recommendations, then requested explicit confirmation of the cash/manual-exit settings. Implementation has passed 105 local tests: cash budgets excluding pending/unknown BUYs, expiring deferrals, external-sale quantity attribution and persistent BUY pauses, structured Combo detection/explicit skips, holdings/book review and local health reporting. Proposed reserve is zero pending evidence for a fixed percentage. Activation is pending that requested confirmation. See [checklist](ITERATION_CHECKLIST.md) and [control behavior](COPY_CONTROLS.md).
+The operator explicitly approved the cash/manual settings and deployment after review. Release `2a65e3e` activated October 22 at 10:38 PM Eastern: cash budgets excluding pending/unknown BUYs, expiring deferrals, external-sale quantity attribution and persistent BUY pauses, structured Combo detection/explicit skips, holdings/book review and local health reporting. Reserve is zero pending evidence for a fixed percentage. All 105 tests pass locally and on the VPS. See [checklist](ITERATION_CHECKLIST.md) and [control behavior](COPY_CONTROLS.md).
+
+Authenticated readiness, running-process overrides, healthy polling and observers, and the five-minute health timer are verified. No restarts or health issues were observed. All 154 cleanup candidates received successful live share/book checks; indicative gross proceeds are about $770 versus $805 marked excess, with unquoted remainder and fees excluded. No cleanup orders were submitted. No fresh order had been submitted under this iteration by the 10:44 PM Eastern verification; subsequent natural activity remains to be observed. See [deployment notes](DEPLOYMENT_NOTES.md) for recovery and runtime paths.
 
 ## Objective and authorization
 
@@ -26,11 +28,11 @@ The operator requests that completed code and documentation changes be committed
 
 ## Deployment state
 
-Live code is commit `dfc8cf0f1152f474f471047620aba45682b3e480` in `/root/polymarket-deploy/releases/dfc8cf0`. Systemd uses this release's own virtual environment and working directory. The original checkout at `/root/polymarket-copy-trading-bot` remains at `2cdc997`; it is retained, not the active code path.
+Live code is commit `2a65e3e5630b2807b309ff34603d9eaaf6fe62b2` in `/root/polymarket-deploy/releases/2a65e3e`. Systemd uses this release's own virtual environment and working directory. Previous API v2 release `dfc8cf0` and the original checkout at `/root/polymarket-copy-trading-bot` (`2cdc997`) are retained; neither is the active code path.
 
-Effective service overrides: `POLL_INTERVAL_SEC=5`, `COPY_ORDER_TYPE=FAK`, `RECONCILE_ON_START=0`. Original credentials and trade-size limits remain in the shared original `.env`. State and logs are shared from the original checkout. The visible migration window was seeded once (407 source groups) before activation to avoid copying historical maker entries.
+Effective service overrides: `POLL_INTERVAL_SEC=5`, `COPY_ORDER_TYPE=FAK`, `RECONCILE_ON_START=0`, zero fixed cash reserve, `CASH_DEFERRAL_SEC=300`, `MANUAL_EXIT_PROTECTION=1`. Original credentials and trade-size limits remain in the shared original `.env`. State and logs are shared from the original checkout. The 407-source migration seed belongs to the earlier 9:18 PM API v2 deployment; this iteration did not reseed historical signals.
 
-The consistent pre-deployment backup is `/root/polymarket-deploy/checkpoints/before-20261023T011809Z`; the active deployment manifest is `/root/polymarket-deploy/deployment.json`. Secret-bearing backups remain private on the VPS.
+The consistent pre-activation backup is `/root/polymarket-deploy/checkpoints/before-controls-20261023T023827Z`; validated recovery source/configuration is `/root/polymarket-deploy/checkpoints/api-v2-controls-validated-2a65e3e`. The active manifest is `/root/polymarket-deploy/deployment.json`. Secret-bearing backups remain private on the VPS.
 
 The local `.env` was observed with `TEST_MODE=1` and `POLL_INTERVAL_SEC=45`; it is not the production configuration and was not changed. The server's present configuration must be read before deployment.
 

@@ -5,13 +5,14 @@
 Use `scripts/checkpoint.py` to save a committed revision as a source archive plus a SHA-256 manifest. Snapshot names cannot be reused, and verification detects archive modification. Credentials, runtime state, logs and virtual environments are excluded. Local archives live in gitignored `checkpoints/`; committed code remains recoverable through Git.
 
 - `pre-upgrade-2026-10-22`: original May 4 revision `2cdc997`, retained for comparison and emergency recovery.
-- `api-v2-candidate-2026-10-22`: Data API v2/execution update, commit `dfc8cf0`, now deployed and verified with confirmed live BUY and SELL orders.
+- `api-v2-candidate-2026-10-22`: prior Data API v2/execution update, commit `dfc8cf0`, verified with confirmed live BUY and SELL orders and retained for comparison.
+- `cash-controls-2a65e3e-2026-10-22`: approved cash/manual-exit iteration, commit `2a65e3e`, deployed with 105 passing local/VPS tests and healthy service/observers/timer.
 
 A source checkpoint is **not** a record of the server's running version. The server revision must be checked after SSH access is established.
 
 ## Deployment procedure
 
-The operator authorized agent-managed VPS deployment, key-based SSH now works, and release `dfc8cf0` is live. The consistent private pre-deployment backup is `/root/polymarket-deploy/checkpoints/before-20261023T011809Z`. Current and previous Python environments are both retained.
+The operator authorized agent-managed VPS deployment, key-based SSH works, and release `2a65e3e` is live. The consistent private pre-activation backup is `/root/polymarket-deploy/checkpoints/before-controls-20261023T023827Z`. Current and previous Python environments are retained. The earlier pre-migration backup remains available separately.
 
 For subsequent deployments:
 
@@ -44,8 +45,22 @@ The operator does not need to edit application code or run these routinely; they
 
 ## Current recovery baseline
 
+Current baseline: `/root/polymarket-deploy/checkpoints/api-v2-controls-validated-2a65e3e`. This retains the verified source archive, systemd release configuration and validation manifest for the live `2a65e3e` environment. All 105 tests, authenticated readiness, healthy polling/observers and the health timer are verified. The consistent private pre-activation state/environment checkpoint is `/root/polymarket-deploy/checkpoints/before-controls-20261023T023827Z`. At the recorded validation, no new natural trade had yet been submitted by this iteration; earlier BUY/SELL confirmations belong to the retained API v2 baseline.
+
+For a future code update, the agent can return to the retained `2a65e3e` release after checking pending orders and database compatibility. The checkpoint's override selects its retained interpreter and approved settings:
+
+```bash
+systemctl stop polymarket-bot
+cp /root/polymarket-deploy/checkpoints/api-v2-controls-validated-2a65e3e/90-release.conf /etc/systemd/system/polymarket-bot.service.d/90-release.conf
+systemctl daemon-reload
+systemctl start polymarket-bot
+systemctl start polymarket-bot-health.service
+```
+
+These commands intentionally do not restore `.env`, processed IDs, the order journal or controls database. Verify the health unit still points to the intended release, inspect health/logs after switching, and update the deployment manifest. If newer database changes are incompatible, stop and resolve that before running older software.
+
 Use `/root/polymarket-deploy/deployment.json` and `systemctl show polymarket-bot -p ExecStart -p WorkingDirectory` to identify the running release. The active override is `/etc/systemd/system/polymarket-bot.service.d/90-release.conf`. A future code rollback switches that working directory/interpreter to a retained compatible release, keeps live state/log symlinks, reloads systemd and validates logs. Inspect pending/unknown orders before switching, and never start two bot processes.
 
-The baseline `dfc8cf0` supports Data API v2. Original `2cdc997` remains available for forensic comparison but should not be blindly restarted with the new state/journal or after old API retirement. A backup restores software/configuration; it cannot reverse trades already executed.
+Previous baseline `dfc8cf0` supports Data API v2 but does not enforce new cash/manual-exit controls. Original `2cdc997` remains available for forensic comparison but should not be blindly restarted with the new state/journal or after old API retirement. A backup restores software/configuration; it cannot reverse trades already executed.
 
 The server also stores `/root/polymarket-deploy/checkpoints/api-v2-validated-dfc8cf0` with the verified source archive and validation manifest. This is the compatible baseline for future releases. The original pre-update backup is separate and retains private configuration/state for diagnosis only.

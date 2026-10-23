@@ -1,11 +1,23 @@
 # Deployment Notes
 
-## Current live release — October 22, 2026
+## Current live release — cash/manual-exit iteration
+
+Commit `2a65e3e5630b2807b309ff34603d9eaaf6fe62b2` runs in `/root/polymarket-deploy/releases/2a65e3e`, with a dedicated native virtual environment. All 105 tests pass locally and on the VPS; dependency consistency and authenticated read-only readiness pass. The operator explicitly approved the settings and deployment. Activation completed October 22, 2026 at 10:38:28 PM Eastern (`2026-10-23T02:38:28.596553+00:00`). Previous release `dfc8cf0` remains retained.
+
+Verified process-level overrides: polling 5 seconds, FAK, `RECONCILE_ON_START=0`, `CASH_RESERVE_FRACTION=0`, `CASH_RESERVE_USD=0`, `CASH_DEFERRAL_SEC=300`, `MANUAL_EXIT_PROTECTION=1`. The service is active/running with zero restarts; successful polling, the manual activity observer and Combo registry are verified. The health report has no issues. No new natural order had been submitted at the 10:44 PM Eastern verification; no test trade was forced.
+
+Archive `/root/polymarket-deploy/incoming/2a65e3e.tar.gz` has SHA-256 `e9616d4bf4e556908614ea34e3f23a6e4930ae730f222ea1fa34dc3afde34a29`. Verified local checkpoint: `checkpoints/cash-controls-2a65e3e-2026-10-22`. A consistent private backup was taken with the service stopped at `/root/polymarket-deploy/checkpoints/before-controls-20261023T023827Z`; it contains state, environment, previous service/dependency metadata and staging artifacts. The live `.env` contents were retained, and the release now shares the original live `state/` and `logs/`. No source IDs were reseeded. Backup directory mode 700 and environment file mode 600 were verified.
+
+The release's health-service/timer templates were installed with the actual release path. `polymarket-bot-health.timer` is enabled and active; it runs every five minutes and writes `/root/polymarket-copy-trading-bot/logs/health_latest.json`. Health checks do not trade or automatically restart. `/root/polymarket-deploy/checkpoints/api-v2-controls-validated-2a65e3e` retains verified recovery source, release configuration and validation metadata. Preserve `controls.sqlite3` on rollback; earlier `dfc8cf0` code does not enforce new asset pauses. See [iteration checklist](ITERATION_CHECKLIST.md) and [control behavior](COPY_CONTROLS.md).
+
+The full read-only review quoted all 154 startup-sale candidates without errors: about $805.44 marked excess and $770.42 indicative gross bid proceeds before fees, with some unfilled remainder. It submitted no orders. Bulk cleanup remains disabled.
+
+## Previous API v2 release — October 22, 2026, 9:18 PM Eastern
 
 - Verified key-based SSH: `root@216.238.91.62`.
-- Active commit: `dfc8cf0f1152f474f471047620aba45682b3e480`.
-- Active working directory: `/root/polymarket-deploy/releases/dfc8cf0`.
-- Active interpreter: `/root/polymarket-deploy/releases/dfc8cf0/.venv/bin/python`.
+- Previous commit: `dfc8cf0f1152f474f471047620aba45682b3e480`.
+- Retained working directory: `/root/polymarket-deploy/releases/dfc8cf0`.
+- Retained interpreter: `/root/polymarket-deploy/releases/dfc8cf0/.venv/bin/python`.
 - Service: `polymarket-bot`; override file: `/etc/systemd/system/polymarket-bot.service.d/90-release.conf`.
 - Effective overrides: polling 5 seconds, FAK copies, startup reconciliation disabled.
 - Shared credentials: `/root/polymarket-copy-trading-bot/.env` (symlinked into the release).
