@@ -5,15 +5,15 @@
 Use `scripts/checkpoint.py` to save a committed revision as a source archive plus a SHA-256 manifest. Snapshot names cannot be reused, and verification detects archive modification. Credentials, runtime state, logs and virtual environments are excluded. Local archives live in gitignored `checkpoints/`; committed code remains recoverable through Git.
 
 - `pre-upgrade-2026-10-22`: original May 4 revision `2cdc997`, retained for comparison and emergency recovery.
-- A separate checkpoint captures the committed Data API v2/execution update before its first server deployment.
+- `api-v2-candidate-2026-10-22`: Data API v2/execution update, commit `dfc8cf0`, now deployed and verified with confirmed live BUY and SELL orders.
 
 A source checkpoint is **not** a record of the server's running version. The server revision must be checked after SSH access is established.
 
 ## Deployment procedure
 
-The operator authorized agent-managed VPS deployment in this conversation. SSH currently requires a one-time key enrollment. The server has not been changed by the failed SSH access test.
+The operator authorized agent-managed VPS deployment, key-based SSH now works, and release `dfc8cf0` is live. The consistent private pre-deployment backup is `/root/polymarket-deploy/checkpoints/before-20261023T011809Z`. Current and previous Python environments are both retained.
 
-After access works:
+For subsequent deployments:
 
 1. Read actual service status, process command, interpreter, server revision, nonsecret settings and relevant logs. Preserve local server edits and do not print `.env` or credentials.
 2. Prepare a separate release directory from the committed source checkpoint and create its own server-native virtual environment. Retain the previous release and environment so rollback does not reinstall dependencies.
@@ -39,3 +39,11 @@ python3 scripts/checkpoint.py list
 ```
 
 The operator does not need to edit application code or run these routinely; they document how checkpoints are generated and verified.
+
+## Current recovery baseline
+
+Use `/root/polymarket-deploy/deployment.json` and `systemctl show polymarket-bot -p ExecStart -p WorkingDirectory` to identify the running release. The active override is `/etc/systemd/system/polymarket-bot.service.d/90-release.conf`. A future code rollback switches that working directory/interpreter to a retained compatible release, keeps live state/log symlinks, reloads systemd and validates logs. Inspect pending/unknown orders before switching, and never start two bot processes.
+
+The baseline `dfc8cf0` supports Data API v2. Original `2cdc997` remains available for forensic comparison but should not be blindly restarted with the new state/journal or after old API retirement. A backup restores software/configuration; it cannot reverse trades already executed.
+
+The server also stores `/root/polymarket-deploy/checkpoints/api-v2-validated-dfc8cf0` with the verified source archive and validation manifest. This is the compatible baseline for future releases. The original pre-update backup is separate and retains private configuration/state for diagnosis only.

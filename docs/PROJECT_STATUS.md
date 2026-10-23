@@ -2,9 +2,9 @@
 
 ## Objective and authorization
 
-Improve copying fidelity and diagnose the gap versus the target trader. The operator approved local implementation, testing, and a read-only account comparison. VPS deployment remains a separate review step. No higher percentage cap, higher minimum buy, automatic portfolio top-up, or automatic redemption has been enabled.
+Improve copying fidelity and diagnose the gap versus the target trader. The operator approved implementation and agent-managed VPS deployment, then enrolled an SSH public key. Deployment completed on October 22, 2026 at 9:18 PM Eastern. No higher percentage cap, higher minimum buy, automatic portfolio top-up, or automatic redemption has been enabled.
 
-## Implemented locally
+## Implemented and deployed
 
 - Data API v2 envelope, field normalization, cursor walks, explicit `taker_only=false`, rate-limit retries, and complete position snapshots.
 - Transaction/asset/side identities, with legacy plain hashes honored to avoid replaying historical orders.
@@ -20,7 +20,11 @@ Improve copying fidelity and diagnose the gap versus the target trader. The oper
 
 ## Deployment state
 
-Local code has not been deployed to the VPS. The last historical deployment evidence is May 4, 2026, commit `2cdc997`. Do not present that historical evidence as confirmation of current server health.
+Live code is commit `dfc8cf0f1152f474f471047620aba45682b3e480` in `/root/polymarket-deploy/releases/dfc8cf0`. Systemd uses this release's own virtual environment and working directory. The original checkout at `/root/polymarket-copy-trading-bot` remains at `2cdc997`; it is retained, not the active code path.
+
+Effective service overrides: `POLL_INTERVAL_SEC=5`, `COPY_ORDER_TYPE=FAK`, `RECONCILE_ON_START=0`. Original credentials and trade-size limits remain in the shared original `.env`. State and logs are shared from the original checkout. The visible migration window was seeded once (407 source groups) before activation to avoid copying historical maker entries.
+
+The consistent pre-deployment backup is `/root/polymarket-deploy/checkpoints/before-20261023T011809Z`; the active deployment manifest is `/root/polymarket-deploy/deployment.json`. Secret-bearing backups remain private on the VPS.
 
 The local `.env` was observed with `TEST_MODE=1` and `POLL_INTERVAL_SEC=45`; it is not the production configuration and was not changed. The server's present configuration must be read before deployment.
 
@@ -37,7 +41,7 @@ Polymarket's current Data API migration guide announces v1 retirement on **Octob
 - Pending fills block subsequent activity in that asset until settled. Read failures do not release the block.
 - Old trade CSVs describe intentions and cannot establish actual historical executions.
 - A read-only report can measure account activity now, but exact bot attribution starts with the new journal. Manual profit-taking cannot be inferred from public trades.
-- No tests place live orders. Authenticated readiness and a controlled deployment still need verification on the actual server.
+- No tests place live orders. Server readiness, quote/book consistency and an existing confirmed-trade parse are verified. Fresh post-deployment BUY and SELL executions have both reached confirmed status.
 
 ## Re-entry workflow
 
@@ -50,12 +54,24 @@ Read this file, README, deployment notes, and ops notes. Inspect `git status`. R
 - Dependency consistency, Python compilation, local config-format checks and whitespace checks passed. No live orders were placed by this work.
 - A public seven-day review was generated at `logs/performance_review.md` and `.json` (gitignored). The latest sample contains 2,042 target transaction/asset/side groups, of which 380 appear in the taker-only feed, and 143 groups on the operator account. Feed visibility was about 19% before the maker-filter fix; this is not a copy success rate.
 - Five deposits in the sampled window total $731.60. They are reported as capital movements. Same-time daily PnL changes are included without inventing a percentage return or attributing manual activity to the bot.
-- No production order journal is available on this laptop; exact historical bot attribution and current VPS configuration remain unverified.
+- No production order journal is available on this laptop; exact historical bot attribution remains unavailable; current VPS configuration was subsequently verified during deployment.
 
 ## Deployment automation and rollback follow-up
 
-The operator asked for agent-managed VPS deployment and checkpoints. A BatchMode SSH access check reached `216.238.91.62` but authentication was rejected. No remote state or service was changed. The operator is enrolling their existing public key with `ssh-copy-id`; retry unattended access after they confirm completion.
+The initial SSH key enrollment failed before installing the key. Password-only `ssh-copy-id` succeeded, and unattended SSH was verified. The agent inspected, backed up, and deployed the VPS. No additional terminal setup is currently needed.
 
 A verified source-only checkpoint of the prior `2cdc997` revision is saved under `checkpoints/pre-upgrade-2026-10-22/`. The checkpoint tool and its tests are included in the upcoming committed revision. See [CHECKPOINTS.md](CHECKPOINTS.md) for the release and rollback procedure. Current local validation: 77 offline tests pass.
 
 Cash availability is an alternative explanation for missed BUYs. Fully deployed funds can prevent entries even when the feed is complete. The 19% figure measures old feed visibility only; it does not attribute the account's underperformance. Inspect live-server balance/allowance failures and exit history before attributing the gap to one cause. Missing SELLs of held shares require a separate explanation from a lack of buying cash.
+
+## October 22 deployment verification
+
+- All 77 tests and dependency checks passed in the VPS's native Python 3.11 environment before activation.
+- Authenticated API credentials and collateral reads passed; cash was approximately $547 during staging, subsequently $561 in live logs.
+- No `not enough balance` messages were found in the preceding 24-hour log sample; liquidity/FOK failures were present. This does not establish cash availability over earlier periods.
+- A read-only startup reconciliation preview found 154 candidates totaling about $808 in marked excess value. Bulk startup reconciliation is deliberately disabled in the live override pending a separate holdings review. Normal new-trade SELL copying remains active.
+- Live midpoint and bid/ask helpers matched an actual order book. The confirmed-fill parser correctly read an existing settled taker execution.
+- The new process is active with no observed restarts or poll-cycle errors. Fresh target activity subsequently produced a confirmed SELL and a confirmed BUY. The BUY succeeded on a later poll after an initial liquidity rejection. No extra test trade was forced.
+- Preserve the original shared `.env`, current processed state and current SQLite order journal. Do not use an old JSON state backup to replay live orders.
+
+The server's validated compatible checkpoint is `/root/polymarket-deploy/checkpoints/api-v2-validated-dfc8cf0`. It retains the verified source archive and deployment manifest; the release's native environment remains installed. Both BUY and SELL execution confirmations establish this as the recovery baseline for future compatible code updates.

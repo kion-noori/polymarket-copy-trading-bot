@@ -33,7 +33,7 @@ journalctl -u polymarket-bot --since "1 hour ago"
 ## Project Paths
 
 ```bash
-cd /root/polymarket-copy-trading-bot
+cd /root/polymarket-deploy/releases/dfc8cf0
 ```
 
 ## Environment / Readiness Checks
@@ -50,15 +50,11 @@ nano /root/polymarket-copy-trading-bot/.env
 systemctl restart polymarket-bot
 ```
 
-## Update Code On VPS
+## Updates and rollback
 
-```bash
-cd /root/polymarket-copy-trading-bot
-git pull origin main
-source .venv/bin/activate
-pip install -r requirements.txt
-systemctl restart polymarket-bot
-```
+The active code is a versioned release in `/root/polymarket-deploy/releases/dfc8cf0`, selected by a systemd override. The original Git checkout is retained and is not the running code path. A `git pull` in that old checkout will not update the service.
+
+The agent can now stage, validate and deploy future releases over SSH. See [checkpoint notes](CHECKPOINTS.md) before rollback. Preserve current shared state and pending-order history; do not restore an old processed-trades snapshot after live fills.
 
 ## Useful Interpretation Notes
 
@@ -85,7 +81,7 @@ curl -s https://polymarket.com/api/geoblock
 
 ## October 2026 update
 
-Local implementation is ready for review; deployment is pending. See [project status](PROJECT_STATUS.md). Data API v1 is scheduled to retire October 24, 2026.
+Release `dfc8cf0` is deployed and key-based SSH works. See [project status](PROJECT_STATUS.md). Data API v1 is scheduled to retire October 24, 2026.
 
 Do not copy the laptop `.env` to the server. The laptop was last observed in test mode with a 45-second override. Server credentials/settings must be inspected and retained separately. The new code default is five seconds, but an existing override wins.
 
@@ -97,10 +93,10 @@ On the **Mac**, connect first:
 ssh root@216.238.91.62
 ```
 
-Then, **on the server after deploying the new code**:
+Then, **on the server**:
 
 ```bash
-cd /root/polymarket-copy-trading-bot
+cd /root/polymarket-deploy/releases/dfc8cf0
 .venv/bin/python scripts/review_performance.py --days 7
 cat logs/performance_review.md
 ```
@@ -140,3 +136,16 @@ Before any restart/update, capture current service status, service interpreter p
 Stop the service before backing up state and updating code. Preserve `.env`, the full `state/` directory, and logs. Install `requirements.txt` using the exact service interpreter, run the readiness checker, then validate submitted and confirmed fills separately after a controlled restart. Review `RECONCILE_ON_START` before restarting because it can submit sales immediately.
 
 Keep backups on the server; never commit credentials. Running two copies against the same funded account is unsupported even though one checkout has a process lock.
+
+## Effective settings after deployment
+
+The systemd override sets `POLL_INTERVAL_SEC=5`, `COPY_ORDER_TYPE=FAK`, and `RECONCILE_ON_START=0`. These take precedence over the shared original `.env`. The original credentials, 10% sizing cap and $5 desired minimum remain unchanged. Bulk reconciliation needs a separate holdings review; ordinary new target SELLs are still copied.
+
+Server-only deployment records and consistent backup:
+
+```text
+/root/polymarket-deploy/deployment.json
+/root/polymarket-deploy/checkpoints/before-20261023T011809Z
+```
+
+The backup contains credentials: keep it on the server and out of Git. Both old and new virtual environments are retained.
