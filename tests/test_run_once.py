@@ -574,3 +574,15 @@ def test_mixed_group_decision_retains_each_source_direction(main_mod):
     with main.controls.connect() as db:
         actual = {r['source']: r['side'] for r in db.execute('SELECT source,side FROM decisions')}
     assert actual == {'a:token:BUY': 'BUY', 'b:token:SELL': 'SELL'}
+
+
+def test_external_sale_monitoring_disabled_allows_fresh_target_buy(main_mod, monkeypatch):
+    main, st, trade, calls = setup_cash_trade(main_mod, monkeypatch, cash=20)
+    monkeypatch.setattr(main.config, 'MANUAL_EXIT_PROTECTION', False)
+    def account_feed_must_not_gate_reentry(*args):
+        raise AssertionError('Disabled external-sale protection must not query or block BUYs')
+    monkeypatch.setattr(main.manual_guard, 'fetch_account_trades', account_feed_must_not_gate_reentry)
+    main.run_once()
+    assert len(calls) == 1
+    assert st.is_already_seen(main.trade_key(trade))
+    assert not main.controls.paused(trade['asset'])

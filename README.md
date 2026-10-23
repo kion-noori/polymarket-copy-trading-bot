@@ -6,9 +6,9 @@ The bot runs independently on a VPS. Your laptop is used to inspect logs and dep
 
 ## Current status
 
-Release `2a65e3e` is live on the VPS after explicit operator approval, activated October 22, 2026 at 10:38 PM Eastern. It adds cash-aware BUY limits, expiring deferrals, manual-exit pauses, explicit Combo skips, holdings review and five-minute health checks. All 105 tests pass locally and on the VPS. See the [iteration checklist](docs/ITERATION_CHECKLIST.md) and [control behavior](docs/COPY_CONTROLS.md).
+Release `2a65e3e` is live on the VPS after explicit operator approval, activated October 22, 2026 at 10:38 PM Eastern. It adds cash-aware BUY limits, expiring deferrals, optional manual-exit pauses, explicit Combo skips, holdings review and five-minute health checks. At the operator's request, automatic external-sale pauses were disabled October 23 at 12:45 AM Eastern: a fresh eligible target BUY can reopen an asset after a manual sale. Cash, sizing and price guards still apply. The deployed source passed 105 local/VPS tests; the updated local suite passes 106. See the [iteration checklist](docs/ITERATION_CHECKLIST.md) and [control behavior](docs/COPY_CONTROLS.md).
 
-Authenticated reads, current book snapshots, polling, manual-sale monitoring and the health timer are verified. The earlier `dfc8cf0` release already produced confirmed BUY and SELL executions. No forced test trade was used for this iteration; confirmation of a fresh order from the new controls release awaits subsequent target activity. See [project status](docs/PROJECT_STATUS.md) and [deployment notes](docs/DEPLOYMENT_NOTES.md).
+Authenticated reads, current book snapshots, polling and the health timer are verified. Automatic manual-sale monitoring is disabled under the current policy. Three natural BUYs have reached filled status since the controls release activated; no test trade was forced. The earlier `dfc8cf0` release also produced confirmed BUY and SELL executions. See [project status](docs/PROJECT_STATUS.md) and [deployment notes](docs/DEPLOYMENT_NOTES.md).
 
 This update uses Data API **v2**. Polymarket's [migration guide](https://docs.polymarket.com/migrate/data-api-v1-to-v2) announces retirement of the old Data API on October 24, 2026. Changing the base URL alone is insufficient: v2 uses an envelope, renamed fields, and cursor pagination.
 

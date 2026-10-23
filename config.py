@@ -98,7 +98,7 @@ def _bool_env(name: str, default: bool) -> bool:
     return v in ("1", "true", "yes", "on")
 
 COPY_ORDER_TYPE = os.getenv("COPY_ORDER_TYPE", "FAK").strip().upper()
-MANUAL_EXIT_PROTECTION = _bool_env("MANUAL_EXIT_PROTECTION", True)
+MANUAL_EXIT_PROTECTION = _bool_env("MANUAL_EXIT_PROTECTION", False)
 PARTIAL_FALLBACK_ENABLED = _bool_env("PARTIAL_FALLBACK_ENABLED", True)
 PARTIAL_FALLBACK_FRACTION = _float_env("PARTIAL_FALLBACK_FRACTION", 0.5)
 PARTIAL_FALLBACK_MIN_NOTIONAL = _float_env("PARTIAL_FALLBACK_MIN_NOTIONAL", 1.0)

@@ -5,12 +5,14 @@
 - No fixed reserve: `CASH_RESERVE_FRACTION=0`, `CASH_RESERVE_USD=0`. There is no measured evidence that a fixed 10% reserve improves returns. The reserve remains configurable for a later evidence-based decision.
 - A BUY must fit both a fresh cash read minus active BUY budgets and the remaining budget in the current polling cycle. Pending or unknown orders reserve their full requested budget. This can temporarily underestimate cash; it avoids reusing unsettled funds.
 - Unaffordable BUYs are deferred without posting, increasing rejection counters or invoking the smaller fallback. Cash, quote, pending-order and account-activity BUY delays expire after `CASH_DEFERRAL_SEC=300`, including across restarts. A deposit after that deadline does not replay the delayed source. Normal price/age guards still apply within the window.
-- With `MANUAL_EXIT_PROTECTION=true`, a newly observed external settled sale pauses new BUYs of that exact asset until resumed. Partial manual sales also trigger a pause. Normal SELLs remain active. Already skipped BUYs are not replayed on resume.
+- `MANUAL_EXIT_PROTECTION=false`: manual/external sales do not pause later BUYs. A fresh eligible target BUY can reopen the same asset, subject to the usual cash, sizing and entry guards. A lower price alone does not trigger a purchase. Previously processed signals are not replayed.
 - Bulk startup cleanup remains disabled. Review proposals do not authorize or submit sales.
 
-The operator explicitly approved these settings and deployment. Release `2a65e3e` activated October 22 at 10:38 PM Eastern; process-level overrides, successful polling and the health timer were verified. See deployment notes for the private checkpoint and manifest.
+Release `2a65e3e` activated October 22 at 10:38 PM Eastern. At the operator's request, automatic external-sale pauses were disabled October 23 at 12:45 AM Eastern (`2026-10-23T04:45:28Z`). The existing feature flag was set to zero in both systemd and the shared server environment; the tested trading code was retained. No existing automatic pauses needed clearing. Runtime, health reporting and the new recovery checkpoint were verified with `MANUAL_EXIT_PROTECTION=0`; the bot completed successful polls with no health issues. The local suite passes 106 tests, including a fresh-BUY regression with external-sale monitoring disabled. Explicit operator-requested asset pauses remain available through the CLI.
 
 ## Manual attribution and limits
+
+This optional observer is disabled under the current policy. The following describes its behavior if explicitly re-enabled; disabled monitoring does not gate BUYs on account-activity reads or create automatic pauses.
 
 The public on-chain wallet feed captures settled sales, including browser trades that another API credential may not expose. Transaction/asset identities and sold quantities are compared with journaled bot fills. A settlement batch can contain both bot and external orders, so identity alone is insufficient; excess sold quantity triggers protection. An active/unknown bot SELL delays classification; it does not get guessed as manual. Detection starts at the first activation of this observer, rather than labeling old unattributed trades as manual.
 
@@ -28,7 +30,7 @@ The agent can run these commands on the VPS from the active release; the operato
 .venv/bin/python scripts/control_bot.py resume ASSET_ID --reason 'Operator approved new buys'
 ```
 
-Resuming does not remove remembered sale identities, so an old sale cannot immediately reapply the pause. A new external sale can pause the asset again. Pauses are account-wide per asset; decisions and observer cursors also record the target. Simulation uses separate control state.
+Resuming does not remove remembered sale identities, so an old sale cannot immediately reapply the pause. A new external sale can pause the asset again only if automatic protection is explicitly re-enabled. Pauses are account-wide per asset; decisions and observer cursors also record the target. Simulation uses separate control state.
 
 ## Combo compatibility result
 
