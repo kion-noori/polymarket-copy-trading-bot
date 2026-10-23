@@ -23,6 +23,7 @@ def main_mod(monkeypatch, tmp_path):
     importlib.reload(main)
     monkeypatch.setattr(main, "LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setattr(main, "get_order_execution", lambda *args: ("pending", []))
+    monkeypatch.setattr(main, 'get_collateral_balance_usdc', lambda: 1000.0)
     return main
 
 

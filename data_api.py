@@ -146,6 +146,11 @@ def get_portfolio_value(user: str) -> float:
         raise DataAPIError("Invalid portfolio value") from exc
 
 
+def get_combo_positions(user: str) -> list[dict]:
+    """Complete held Combo snapshot; entry basis is not an executable sale quote."""
+    return _pages('positions/combos', {'user': user, 'limit': 100}, max_pages=100)
+
+
 def get_activity(user: str, start: int, end: int) -> list[dict]:
     return _pages("activity", {"user": user, "start": start, "end": end, "limit": 100,
                               "exclude_deposits_withdrawals": "false"}, max_pages=1000)

@@ -40,6 +40,10 @@ from config import (
     TEST_MODE,
     validate_config,
 )
+import config
+import copy_controls as controls
+import manual_guard
+import market_support
 from data_api import get_positions, get_portfolio_value, get_trades, trade_key
 from executor import (
     get_bid_ask_prices,
@@ -48,17 +52,53 @@ from executor import (
     get_current_price,
     get_order_execution,
     place_market_order,
+    UnsupportedMarket,
 )
 from notifier import send_alert
 import order_journal as journal
 from risk_guards import is_group_too_old, is_trade_too_old, price_guard_allows, vwap_price_buy_group
 from sizing import compute_my_notional, compute_my_sell_notional
-from state import get_failure_count, is_already_seen, mark_seen, mark_seen_batch, note_live_order_failure
+from state import get_failure_count, is_already_seen, mark_seen, mark_seen_batch, note_live_order_failure as _note_failure
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 TRADES_LOG_HEADER = "timestamp,side,outcome,market_title,notional_usd,price,shares,mode"
+_cycle_buy_remaining = None
+_cycle_nav = 0.0
+_manual_observer_ok = True
+_last_order_deferred = False
+
+
+def _decision(trades, action, reason, **details):
+    trades = trades if isinstance(trades, list) else [trades]
+    controls.record([trade_key(t) for t in trades], trades[0]['asset'], trades[0]['side'], action, reason, **details)
+    if action == 'deferred' and trades[0]['side'] == 'BUY':
+        controls.defer([trade_key(t) for t in trades])
+
+
+def note_live_order_failure(source_ids, max_attempts):
+    # Cash/read deferrals are not failed exchange orders and must not trigger
+    # the smaller fallback or permanently consume a source signal.
+    return False if _last_order_deferred else _note_failure(source_ids, max_attempts)
+
+
+def _pending_buy_budget():
+    return sum(float(json.loads(row['request'])['notional_usd'])
+                  for row in journal.active_orders()
+                  if json.loads(row['request']).get('side') == 'BUY')
+
+
+def _available_buy_cash():
+    cash = get_collateral_balance_usdc()
+    pending = _pending_buy_budget()
+    available, reserve = controls.cash_budget(cash, _cycle_nav, pending)
+    if _cycle_buy_remaining is not None:
+        available = min(available, _cycle_buy_remaining)
+    controls.set_meta('cash_snapshot', {'at': time.time(), 'cash': cash, 'nav': _cycle_nav,
+                                       'reserve': reserve, 'pending_buy_budget': pending,
+                                       'available_for_buy': available})
+    return available
 
 
 def _utc_now() -> datetime:
@@ -251,6 +291,9 @@ def _refresh_pending_orders() -> None:
             changed = True
             logger.info("Order confirmed: orderID=%s state=%s filled_shares=%.6f",
                         row["order_id"], status, sum(fill["shares"] for fill in fills))
+            request = json.loads(row['request'])
+            controls.record(request['source_ids'], row['asset'], request['side'], status, 'exchange_' + status,
+                            order_id=row['order_id'], filled_shares=sum(fill['shares'] for fill in fills))
     if changed:
         journal.export_fills(LOG_DIR)
 
@@ -266,6 +309,8 @@ def _place_one(
     reconciled separately and cannot be posted twice. No-fill FAK is terminal;
     partial fills are accepted without automatically chasing the remainder.
     """
+    global _last_order_deferred, _cycle_buy_remaining, _manual_observer_ok
+    _last_order_deferred = False
     reference_price = reference_price or worst_price
     shares = my_notional / reference_price
     logger.info("Trade: %s %s | %s | requested $%.2f, ~%.6f shares, price limit %.4f",
@@ -275,6 +320,27 @@ def _place_one(
         _apply_theoretical_trade(asset, side, my_notional, reference_price)
         return True
     source_ids = source_ids or [f"reconcile:{asset}:{shares:.8f}"]
+    if side == 'BUY':
+        _manual_observer_ok = manual_guard.refresh(force=True)
+        if controls.paused(asset):
+            controls.record(source_ids, asset, side, 'skipped', 'manual_exit_pause')
+            return True
+        try:
+            available = _available_buy_cash()
+        except Exception:
+            available = None
+        if not _manual_observer_ok or available is None or available + 1e-8 < my_notional:
+            reason = 'manual_observer_unavailable' if not _manual_observer_ok else (
+                'cash_read_unavailable' if available is None else 'insufficient_spendable_cash')
+            controls.defer(source_ids)
+            controls.record(source_ids, asset, side, 'deferred', reason,
+                            requested=my_notional, available=available)
+            logger.info('BUY deferred (%s): requested $%.2f, available %s | %s', reason,
+                        my_notional, available, title[:80])
+            if reason == 'insufficient_spendable_cash':
+                send_alert('low_cash', 'Copied BUY deferred: insufficient cash after pending orders and configured reserve')
+            _last_order_deferred = True
+            return False
     request = {"asset": asset, "condition_id": condition_id, "side": side,
                "notional_usd": my_notional, "shares": shares if side == "SELL" else None,
                "limit_price": worst_price, "reference_price": reference_price,
@@ -287,21 +353,34 @@ def _place_one(
         response = place_market_order(token_id=asset, condition_id=condition_id, side=side,
                                       notional_usd=my_notional, worst_price=worst_price,
                                       order_type=request["order_type"], shares=request["shares"])
+    except UnsupportedMarket as exc:
+        journal.update(key, 'rejected', response={'errorMsg': str(exc)})
+        controls.record(source_ids, asset, side, 'skipped', 'unsupported_market', title=title)
+        logger.warning('Copy skipped: ordinary market metadata unavailable | %s', title[:80])
+        return True
     except Exception as exc:
         journal.update(key, "rejected", response={"errorMsg": str(exc)})
         logger.warning("Order preparation failed: %s", exc)
+        controls.record(source_ids, asset, side, 'rejected', 'preparation_error', error=str(exc)[:250])
         return False
     if response and response.get("orderID"):
         journal.update(key, "pending", response=response)
         logger.info("Order submitted: orderID=%s status=%s; awaiting confirmed fills",
                     response["orderID"], response.get("status"))
         _refresh_pending_orders()
+        if side == 'BUY' and _cycle_buy_remaining is not None:
+            _cycle_buy_remaining = max(0.0, _cycle_buy_remaining - my_notional)
+        controls.record(source_ids, asset, side, 'submitted', 'exchange_submitted', order_id=response['orderID'])
         return True
     if response and (response.get("success") is False or response.get("status") == "rejected"):
         journal.update(key, "rejected", response=response)
         logger.warning("Order rejected; eligible for bounded retry")
+        controls.record(source_ids, asset, side, 'rejected', 'exchange_rejected', error=str(response.get('errorMsg', ''))[:250])
         return False
     journal.update(key, "unknown", response=response or {"status": "unknown"})
+    if side == 'BUY' and _cycle_buy_remaining is not None:
+        _cycle_buy_remaining = max(0.0, _cycle_buy_remaining - my_notional)
+    controls.record(source_ids, asset, side, 'unknown', 'submission_unknown')
     send_alert("uncertain_order", f"Submission {key} has unknown outcome; automatic repost blocked")
     return True
 
@@ -327,6 +406,7 @@ def _try_partial_fallback_buy(
     outcome: str,
     context_label: str,
     source_ids: list[str] | None = None,
+    reference_price: float | None = None,
 ) -> bool:
     rescue_notional = _fallback_partial_notional(my_notional)
     if rescue_notional <= 0:
@@ -348,6 +428,7 @@ def _try_partial_fallback_buy(
         title,
         outcome=outcome,
         source_ids=source_ids,
+        reference_price=reference_price,
     )
 
 
@@ -566,10 +647,12 @@ def _maybe_reconcile_positions_on_start(my_value: float, target_value: float) ->
 
 def run_once() -> None:
     """Poll target trades, mirror any new ones with proportional sizing."""
-    global _poll_count, _startup_window_initialized
+    global _poll_count, _startup_window_initialized, _cycle_buy_remaining, _cycle_nav, _manual_observer_ok
     _poll_count += 1
 
     _refresh_pending_orders()
+    _manual_observer_ok = manual_guard.refresh()
+    market_support.refresh_registry()
     trades = _get_recent_trades()
 
     # Data API /value = mark-to-market of open positions only (0 if no positions).
@@ -578,6 +661,12 @@ def run_once() -> None:
     cash_usdc = get_collateral_balance_usdc()
     raw_bankroll = position_value + cash_usdc
     my_value = raw_bankroll
+    _cycle_nav = raw_bankroll
+    pending_budget = _pending_buy_budget() if not TEST_MODE else 0
+    _cycle_buy_remaining, reserve = controls.cash_budget(cash_usdc, raw_bankroll, pending_budget)
+    controls.set_meta('cash_snapshot', {'at': time.time(), 'cash': cash_usdc, 'nav': raw_bankroll,
+                                       'reserve': reserve, 'pending_buy_budget': pending_budget,
+                                       'available_for_buy': _cycle_buy_remaining})
     target_value = get_portfolio_value(TARGET_WALLET)
     if my_value <= 0 and TEST_MODE:
         my_value = 500.0  # placeholder for sizing and theoretical PnL
@@ -625,6 +714,20 @@ def run_once() -> None:
         condition_id = trade.get("conditionId") or trade.get("condition_id")
         if not asset or not condition_id:
             continue
+        unsupported = market_support.unsupported_reason(trade)
+        if unsupported:
+            _decision(trade, 'skipped', unsupported)
+            mark_seen(tx_hash)
+            logger.info('Copy skipped (%s): %s', unsupported, trade.get('title', '')[:80])
+            continue
+        if side == 'BUY' and controls.deferred_expired(tx_hash):
+            _decision(trade, 'skipped', 'deferral_expired')
+            mark_seen(tx_hash)
+            continue
+        if side == 'BUY' and controls.paused(asset):
+            _decision(trade, 'skipped', 'manual_exit_pause')
+            mark_seen(tx_hash)
+            continue
         unseen_by_asset.setdefault(asset, []).append(trade)
 
     if STARTUP_MODE == "live_safe" and not _startup_window_initialized:
@@ -660,6 +763,7 @@ def run_once() -> None:
 
     for asset, group in unseen_by_asset.items():
         if not TEST_MODE and journal.asset_pending(asset):
+            _decision(group, 'deferred', 'pending_asset_order')
             logger.info("Defer asset %s: prior order awaiting reconciliation", asset[:16])
             continue
         if len(group) == 1:
@@ -676,6 +780,7 @@ def run_once() -> None:
             else:
                 my_notional = compute_my_notional(target_notional, my_value, target_value)
             if my_notional <= 0:
+                _decision(trade, 'skipped', 'size_zero')
                 logger.info(
                     "Skip mirror (size=0): asset=%s... | target_value=$%.2f | "
                     "set SKIP_COPY_WHEN_TARGET_VALUE_UNKNOWN=0 or MIN_NOTIONAL_MODE=floor if unintended",
@@ -690,6 +795,8 @@ def run_once() -> None:
                 worst_price = max(0.01, price * (1 - SELL_SLIPPAGE_FRACTION))
             ok, reason = _pre_trade_allows(asset, side, price, trade)
             if not ok:
+                _decision(trade, 'deferred' if reason.startswith('defer:') else 'skipped',
+                          'quote_unavailable' if reason.startswith('defer:') else 'price_or_age_guard', detail=reason)
                 logger.info(
                     "Skip mirror (%s): %s | %s",
                     reason,
@@ -708,6 +815,7 @@ def run_once() -> None:
                     asset, my_notional, price
                 )
                 if skip_sell:
+                    _decision(trade, 'skipped', 'sell_no_shares')
                     logger.info(
                         "Skip SELL mirror (no CLOB position): have %.6f shares, need ~%.6f | %s | tx %s...",
                         have_shares if have_shares is not None else 0.0,
@@ -737,6 +845,7 @@ def run_once() -> None:
                     )
                 sell_shares = my_notional / price if price > 0 else 0.0
                 if _is_dust_sell(my_notional, price):
+                    _decision(trade, 'skipped', 'sell_dust')
                     logger.info(
                         "Skip SELL mirror (dust remainder): $%.4f / %.6f shares | %s | tx %s...",
                         my_notional,
@@ -770,8 +879,11 @@ def run_once() -> None:
                     _normalize_outcome(trade),
                     "Single-trade",
                     source_ids=[tx_hash],
+                    reference_price=price,
                 ):
                     mark_seen(tx_hash)
+                elif _last_order_deferred:
+                    continue
                 else:
                     logger.warning(
                         "Giving up after %s failed live orders for tx %s...; marking seen (copy manually if needed)",
@@ -798,6 +910,7 @@ def run_once() -> None:
 
         # If target both entered and exited (full or partial), skip: we'd be getting in at bad odds (late).
         if has_buy and has_sell:
+            _decision(group, 'skipped', 'mixed_catchup')
             mark_seen_batch(group_hashes)
             logger.info(
                 "Catch-up: skip asset %s... (target entered then sold; not mirroring late entry)",
@@ -830,6 +943,8 @@ def run_once() -> None:
             ref_for_guard = vwap_price_buy_group(group) or last_price
             ok, reason = _pre_trade_allows(asset, "BUY", ref_for_guard, group)
             if not ok:
+                _decision(group, 'deferred' if reason.startswith('defer:') else 'skipped',
+                          'quote_unavailable' if reason.startswith('defer:') else 'price_or_age_guard', detail=reason)
                 logger.info(
                     "Catch-up skip (%s): BUY net=$%.2f | %s",
                     reason,
@@ -865,8 +980,11 @@ def run_once() -> None:
                     _normalize_outcome(last_trade),
                     "Catch-up",
                     source_ids=group_hashes,
+                    reference_price=ref_for_guard,
                 ):
                     mark_seen_batch(group_hashes)
+                elif _last_order_deferred:
+                    continue
                 else:
                     logger.warning(
                         "Giving up catch-up after %s failed live orders; marking %s tx(es) seen",
@@ -905,6 +1023,7 @@ def run_once() -> None:
                 asset, my_notional, ref_for_guard
             )
             if skip_sell:
+                _decision(group, 'skipped', 'sell_no_shares')
                 mark_seen_batch(group_hashes)
                 logger.info(
                     "Catch-up: skip SELL asset %s... (no CLOB position: have %.6f, need ~%.6f)",
@@ -927,6 +1046,7 @@ def run_once() -> None:
                 my_notional = sell_notional
             sell_shares = my_notional / ref_for_guard
             if _is_dust_sell(my_notional, ref_for_guard):
+                _decision(group, 'skipped', 'sell_dust')
                 mark_seen_batch(group_hashes)
                 logger.info(
                     "Catch-up: skip SELL dust remainder: $%.4f / %.6f shares | %s",
@@ -1004,11 +1124,17 @@ def main() -> None:
         f"{100.0 * MAX_SPREAD_FRACTION:.0f}%%" if MAX_SPREAD_FRACTION > 0 else "off",
         bool(ALERT_WEBHOOK_URL),
     )
+    logger.info('Copy controls: reserve=%.1f%% / $%.2f | BUY delay expiry=%ss | external-sale protection=%s',
+                100 * config.CASH_RESERVE_FRACTION, config.CASH_RESERVE_USD,
+                config.CASH_DEFERRAL_SEC, config.MANUAL_EXIT_PROTECTION)
     while True:
         try:
             run_once()
+            controls.set_meta('last_cycle', {'at': time.time(), 'ok': True})
         except Exception as e:
             logger.exception("Poll cycle error: %s", e)
+            controls.set_meta('last_cycle', {'at': time.time(), 'ok': False, 'error_type': type(e).__name__})
+            send_alert('poll_cycle_error', 'Bot polling cycle failed; inspect the service logs')
         time.sleep(POLL_INTERVAL_SEC)
 
 

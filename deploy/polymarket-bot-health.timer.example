@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Polymarket copy bot health every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=polymarket-bot-health.service
+
+[Install]
+WantedBy=timers.target

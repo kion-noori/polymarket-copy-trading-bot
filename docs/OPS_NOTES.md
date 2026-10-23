@@ -60,6 +60,8 @@ The operator requests that completed code and documentation changes be committed
 
 ## Useful Interpretation Notes
 
+The next iteration's [cash, manual-exit and coverage controls](COPY_CONTROLS.md) include a status/resume CLI and a five-minute health timer example. Before switching to it, check the [iteration checklist](ITERATION_CHECKLIST.md) for staging and activation status. A staged release is not a running release.
+
 - `me=$...` in logs is the bot/operator bankroll snapshot.
 - `target=$...` in logs is the copied wallet's portfolio value used for sizing.
 - `Skip SELL mirror (no CLOB position)` means the account currently has no matching shares. A manual exit, an earlier bot exit, or never entering the market can explain it.

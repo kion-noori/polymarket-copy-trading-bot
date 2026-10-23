@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 _client: ClobClient | None = None
 
 
+class UnsupportedMarket(ValueError):
+    """Definitive metadata rejection: repeated signing attempts cannot fix it."""
+
+
 def _require_client_lib() -> None:
     if ClobClient is None or not USING_CLOB_V2:
         raise RuntimeError(
@@ -78,7 +82,12 @@ def get_market_options(condition_id: str, token_id: str) -> PartialCreateOrderOp
     """Get tick_size and neg_risk for a market (required for order placement)."""
     _require_client_lib()
     client = get_client()
-    info = client.get_clob_market_info(condition_id)
+    try:
+        info = client.get_clob_market_info(condition_id)
+    except Exception as exc:
+        if getattr(exc, 'status_code', None) == 404:
+            raise UnsupportedMarket('Market metadata unavailable on ordinary CLOB route') from exc
+        raise
     if not isinstance(info, dict) or not info.get("mts"):
         raise ValueError("Market metadata unavailable; refusing guessed tick size")
     return PartialCreateOrderOptions(tick_size=str(info["mts"]), neg_risk=bool(info.get("nr", False)))

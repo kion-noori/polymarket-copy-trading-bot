@@ -1,5 +1,9 @@
 # Project status — October 22, 2026
 
+## Next iteration prepared
+
+The operator authorized all follow-up recommendations, then requested explicit confirmation of the cash/manual-exit settings. Implementation has passed 103 local tests: cash budgets excluding pending/unknown BUYs, expiring deferrals, external-sale quantity attribution and persistent BUY pauses, structured Combo detection/explicit skips, holdings/book review and local health reporting. Proposed reserve is zero pending evidence for a fixed percentage. Activation is pending that requested confirmation. See [checklist](ITERATION_CHECKLIST.md) and [control behavior](COPY_CONTROLS.md).
+
 ## Objective and authorization
 
 Improve copying fidelity and diagnose the gap versus the target trader. The operator approved implementation and agent-managed VPS deployment, then enrolled an SSH public key. Deployment completed on October 22, 2026 at 9:18 PM Eastern. No higher percentage cap, higher minimum buy, automatic portfolio top-up, or automatic redemption has been enabled.

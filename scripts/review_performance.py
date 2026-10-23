@@ -11,7 +11,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from config import FUNDER_ADDRESS, TARGET_WALLET
-from data_api import get_activity, get_pnl_series, get_positions, get_trades, DataAPIError
+from data_api import get_activity, get_pnl_series, get_positions, get_combo_positions, get_trades, DataAPIError
 from performance import build_report, aligned_pnl_changes, markdown_report
 
 
@@ -46,6 +46,8 @@ def main() -> int:
         result["raw_target_trades"] = target
         result["raw_my_trades"] = mine
         result["current_positions"] = {"target": get_positions(TARGET_WALLET), "mine": get_positions(FUNDER_ADDRESS)}
+        result['combo_positions'] = {'target': get_combo_positions(TARGET_WALLET), 'mine': get_combo_positions(FUNDER_ADDRESS)}
+        result['limitations'].append('Portfolio value includes unresolved Combos at cost basis; Combo entry basis is not an executable sale value.')
         result["pnl_series"] = {"target": get_pnl_series(TARGET_WALLET), "mine": get_pnl_series(FUNDER_ADDRESS)}
     except DataAPIError as exc:
         print(f"Review incomplete: {exc}. No partial report written.", file=sys.stderr)

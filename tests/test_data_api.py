@@ -83,3 +83,11 @@ def test_rate_limit_honors_retry_after(monkeypatch):
     monkeypatch.setattr(api.time, "sleep", sleeps.append)
     api._request_with_retry("GET", "https://example.invalid")
     assert sleeps == [7]
+
+
+def test_combo_positions_follow_all_pages(monkeypatch):
+    calls = stub(monkeypatch, [page([{'combo_condition_id': 'a'}], 'next'),
+                               page([{'combo_condition_id': 'b'}])])
+    assert len(api.get_combo_positions('wallet')) == 2
+    assert calls[0][0].endswith('/v2/positions/combos')
+    assert calls[1][1]['cursor'] == 'next'

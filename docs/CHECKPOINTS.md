@@ -24,6 +24,8 @@ For subsequent deployments:
 
 ## Rollback rules
 
+The cash/manual-exit iteration also requires preserving `state/controls.sqlite3`. It contains asset pauses, source deferral deadlines and sale attribution identities. The prior `dfc8cf0` code does not enforce those controls. Review active pauses and settings before switching to that older software; a later validated release with these controls should become the next recovery baseline.
+
 Roll back **code and dependencies**, preserving the latest live processed-trade state and order journal. Never blindly restore an old state snapshot after live trading: replayed source trades could create duplicate purchases. Do not start old code that cannot interpret the current state/journal while an order is pending or uncertain.
 
 The May 4 code uses the retiring Data API v1 routes. It is not a durable fallback after their announced October 24 retirement. After the first validated v2 deployment, use an API-compatible v2 release as the normal rollback baseline. If compatibility or pending-order safety is uncertain, leave trading stopped while investigating rather than automatically starting an incompatible release.

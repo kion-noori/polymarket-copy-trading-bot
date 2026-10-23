@@ -67,6 +67,9 @@ MAX_PCT_PER_TRADE = _float_env("MAX_PCT_PER_TRADE", 0.10)
 SIZE_MULTIPLIER = _float_env("SIZE_MULTIPLIER", 1.0)
 MIN_NOTIONAL = _float_env("MIN_NOTIONAL", 5.0)
 MAX_TRADE_USD = _float_env("MAX_TRADE_USD", 0)  # 0 = no absolute cap, only % cap
+CASH_RESERVE_FRACTION = _float_env("CASH_RESERVE_FRACTION", 0.0)
+CASH_RESERVE_USD = _float_env("CASH_RESERVE_USD", 0.0)
+CASH_DEFERRAL_SEC = _float_env("CASH_DEFERRAL_SEC", 300.0)
 
 # BUY: worst acceptable price vs target fill. Default 2% — tight entries.
 SLIPPAGE_FRACTION = _float_env("SLIPPAGE_FRACTION", 0.02)
@@ -95,6 +98,7 @@ def _bool_env(name: str, default: bool) -> bool:
     return v in ("1", "true", "yes", "on")
 
 COPY_ORDER_TYPE = os.getenv("COPY_ORDER_TYPE", "FAK").strip().upper()
+MANUAL_EXIT_PROTECTION = _bool_env("MANUAL_EXIT_PROTECTION", True)
 PARTIAL_FALLBACK_ENABLED = _bool_env("PARTIAL_FALLBACK_ENABLED", True)
 PARTIAL_FALLBACK_FRACTION = _float_env("PARTIAL_FALLBACK_FRACTION", 0.5)
 PARTIAL_FALLBACK_MIN_NOTIONAL = _float_env("PARTIAL_FALLBACK_MIN_NOTIONAL", 1.0)
@@ -174,6 +178,12 @@ def validate_config() -> list[str]:
         errors.append("MIN_NOTIONAL must be >= 0")
     if MAX_TRADE_USD < 0:
         errors.append("MAX_TRADE_USD must be >= 0")
+    if not (0 <= CASH_RESERVE_FRACTION < 1):
+        errors.append("CASH_RESERVE_FRACTION must be in [0, 1)")
+    if not (0 <= CASH_RESERVE_USD < float('inf')):
+        errors.append("CASH_RESERVE_USD must be finite and >= 0")
+    if not (0 < CASH_DEFERRAL_SEC <= 3600):
+        errors.append("CASH_DEFERRAL_SEC must be in (0, 3600]")
     if not (0 <= MAX_PRICE_DEVIATION_VS_TARGET <= 0.99):
         errors.append("MAX_PRICE_DEVIATION_VS_TARGET should be in [0, 0.99]")
     if not (0 < SLIPPAGE_FRACTION < 0.5):
