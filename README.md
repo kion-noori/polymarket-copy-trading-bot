@@ -6,7 +6,7 @@ The bot runs independently on a VPS. Your laptop is used to inspect logs and dep
 
 ## Current status
 
-The next iteration adds cash-aware BUY limits, expiring deferrals, manual-exit pauses, explicit Combo skips, holdings review and health reports. All 103 local tests pass; activation of the proposed cash/manual settings awaits operator confirmation. See the [iteration checklist](docs/ITERATION_CHECKLIST.md) and [control behavior](docs/COPY_CONTROLS.md). The live release described below remains active until the staged update is approved and verified.
+The next iteration adds cash-aware BUY limits, expiring deferrals, manual-exit pauses, explicit Combo skips, holdings review and health reports. All 105 local tests pass; activation of the proposed cash/manual settings awaits operator confirmation. See the [iteration checklist](docs/ITERATION_CHECKLIST.md) and [control behavior](docs/COPY_CONTROLS.md). The live release described below remains active until the staged update is approved and verified.
 
 The October 22, 2026 update is **deployed on the VPS** as release `dfc8cf0`. All 77 tests pass on the server; authenticated reads, live quotes and historical confirmed-fill parsing are verified. Fresh post-deployment BUY and SELL orders have both executed and reached confirmed status. See [project status](docs/PROJECT_STATUS.md) for the handoff and [deployment notes](docs/DEPLOYMENT_NOTES.md) for the last known server setup.
 

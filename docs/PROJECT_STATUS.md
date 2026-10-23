@@ -2,7 +2,7 @@
 
 ## Next iteration prepared
 
-The operator authorized all follow-up recommendations, then requested explicit confirmation of the cash/manual-exit settings. Implementation has passed 103 local tests: cash budgets excluding pending/unknown BUYs, expiring deferrals, external-sale quantity attribution and persistent BUY pauses, structured Combo detection/explicit skips, holdings/book review and local health reporting. Proposed reserve is zero pending evidence for a fixed percentage. Activation is pending that requested confirmation. See [checklist](ITERATION_CHECKLIST.md) and [control behavior](COPY_CONTROLS.md).
+The operator authorized all follow-up recommendations, then requested explicit confirmation of the cash/manual-exit settings. Implementation has passed 105 local tests: cash budgets excluding pending/unknown BUYs, expiring deferrals, external-sale quantity attribution and persistent BUY pauses, structured Combo detection/explicit skips, holdings/book review and local health reporting. Proposed reserve is zero pending evidence for a fixed percentage. Activation is pending that requested confirmation. See [checklist](ITERATION_CHECKLIST.md) and [control behavior](COPY_CONTROLS.md).
 
 ## Objective and authorization
 

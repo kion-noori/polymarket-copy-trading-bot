@@ -2,6 +2,13 @@
 import math
 
 
+def bids_from_book(book):
+    """The pinned SDK returns the raw JSON dictionary, not an OrderBook object."""
+    if not isinstance(book, dict) or not isinstance(book.get('bids'), list):
+        raise ValueError('Order book lacks a bid snapshot')
+    return [(float(row['price']), float(row['size'])) for row in book['bids']]
+
+
 def build_plan(mine, target, my_nav, target_value, paused_assets=(), minimum=1.0):
     if not all(math.isfinite(x) and x > 0 for x in (my_nav, target_value)):
         raise ValueError('Complete positive valuation required for holdings review')

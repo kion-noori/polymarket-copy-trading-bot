@@ -32,7 +32,9 @@ def health_report(hours=24):
                            'adverse_price_points': None if average is None else (
                                average - reference if request['side'] == 'BUY' else reference - average),
                            'filled_fraction_of_request': notional / request['notional_usd'] if request['side'] == 'BUY'
-                           else shares / request['shares']})
+                           else shares / request['shares'],
+                           'fill_fraction_units': 'pre_fee_notional / requested_cash_budget' if request['side'] == 'BUY'
+                           else 'confirmed_shares / requested_shares'})
     return {'generated_at': time.time(), 'hours': hours, 'controls': controls.summary(since),
             'order_outcomes': dict(statuses), 'confirmed_executions': executions,
             'active_orders': [{'intent_id': row['intent_id'], 'asset': row['asset'], 'status': row['status'],

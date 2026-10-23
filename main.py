@@ -72,9 +72,13 @@ _last_order_deferred = False
 
 def _decision(trades, action, reason, **details):
     trades = trades if isinstance(trades, list) else [trades]
-    controls.record([trade_key(t) for t in trades], trades[0]['asset'], trades[0]['side'], action, reason, **details)
-    if action == 'deferred' and trades[0]['side'] == 'BUY':
-        controls.defer([trade_key(t) for t in trades])
+    for side in ('BUY', 'SELL'):
+        source_ids = [trade_key(t) for t in trades if t['side'].upper() == side]
+        if not source_ids:
+            continue
+        controls.record(source_ids, trades[0]['asset'], side, action, reason, **details)
+        if action == 'deferred' and side == 'BUY':
+            controls.defer(source_ids)
 
 
 def note_live_order_failure(source_ids, max_attempts):

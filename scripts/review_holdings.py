@@ -10,7 +10,7 @@ import config
 import copy_controls as controls
 from data_api import get_positions, get_portfolio_value, get_combo_positions
 from executor import get_client, get_collateral_balance_usdc, get_conditional_token_balance_shares
-from holdings_review import build_plan, book_sale_estimate
+from holdings_review import build_plan, book_sale_estimate, bids_from_book
 
 
 def main():
@@ -38,7 +38,7 @@ def main():
                 book = client.get_order_book(row['asset'])
                 floor = max(.01, row['reference_price'] * (1 - config.SELL_SLIPPAGE_FRACTION))
                 row['book_snapshot'] = book_sale_estimate(min(balance, row['excess_shares']),
-                    [(float(b.price), float(b.size)) for b in book.bids], floor)
+                    bids_from_book(book), floor)
             except Exception as exc:
                 row['quote_error'] = type(exc).__name__
     args.output.parent.mkdir(parents=True, exist_ok=True)

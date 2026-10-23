@@ -564,3 +564,13 @@ def test_metadata_404_is_terminal_and_does_not_loop_ten_times(main_mod, monkeypa
     main.run_once()
     assert len(calls) == 1
     assert st.is_already_seen(main.trade_key(trade))
+
+
+def test_mixed_group_decision_retains_each_source_direction(main_mod):
+    main, _ = main_mod
+    rows = [{'transactionHash': 'a', 'asset': 'token', 'side': 'BUY'},
+            {'transactionHash': 'b', 'asset': 'token', 'side': 'SELL'}]
+    main._decision(rows, 'skipped', 'mixed_catchup')
+    with main.controls.connect() as db:
+        actual = {r['source']: r['side'] for r in db.execute('SELECT source,side FROM decisions')}
+    assert actual == {'a:token:BUY': 'BUY', 'b:token:SELL': 'SELL'}

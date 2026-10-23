@@ -1,5 +1,5 @@
 import pytest
-from holdings_review import build_plan, book_sale_estimate
+from holdings_review import build_plan, book_sale_estimate, bids_from_book
 
 
 def test_holdings_review_excludes_manual_and_resolved_positions():
@@ -18,3 +18,10 @@ def test_book_estimate_does_not_value_unfillable_shares_at_mark():
     assert result['quoted_shares'] == 10
     assert result['unquoted_shares'] == 10
     assert result['indicative_gross_proceeds'] == pytest.approx(4.3)
+
+
+def test_pinned_sdk_raw_book_dictionary_can_be_valued():
+    raw = {'bids': [{'price': '0.49', 'size': '3'}, {'price': '0.48', 'size': '2'}], 'asks': []}
+    result = book_sale_estimate(5, bids_from_book(raw))
+    assert result['quoted_shares'] == 5
+    assert result['indicative_gross_proceeds'] == pytest.approx(2.43)
