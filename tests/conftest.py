@@ -2,6 +2,16 @@
 
 import os
 import sys
+from unittest.mock import patch
+
+# Test collection itself imports config/executor. Prevent a checkout's real
+# .env (including credentials and startup-liquidation flags) from participating.
+_dotenv_patch = patch('dotenv.load_dotenv', return_value=False)
+_dotenv_patch.start()
+
+
+def pytest_unconfigure(config):
+    _dotenv_patch.stop()
 
 # Ensure repo root is on path when running `pytest` from project root.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,6 +24,10 @@ import pytest
 @pytest.fixture(autouse=True)
 def isolated_io(tmp_path, monkeypatch):
     """Unit tests never access the operator's journal, logs or network."""
+    for name, value in {'RECONCILE_ON_START': '0', 'CASH_RESERVE_FRACTION': '0',
+                        'CASH_RESERVE_USD': '0', 'CASH_DEFERRAL_SEC': '300',
+                        'MANUAL_EXIT_PROTECTION': '1'}.items():
+        monkeypatch.setenv(name, value)
     import order_journal
     import requests
     import notifier
